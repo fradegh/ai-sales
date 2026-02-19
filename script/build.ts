@@ -17,6 +17,15 @@ console.log("Building client...");
 execSync("npx vite build", { cwd: rootDir, stdio: "inherit" });
 
 // 2. Bundle Express server → dist/index.cjs
+// Keep all node_modules external — they're available at runtime via node_modules/
+const packageJson = JSON.parse(
+  fs.readFileSync(path.join(rootDir, "package.json"), "utf-8")
+);
+const allDeps = [
+  ...Object.keys(packageJson.dependencies || {}),
+  ...Object.keys(packageJson.devDependencies || {}),
+];
+
 console.log("Building server...");
 await esbuild.build({
   entryPoints: [path.join(rootDir, "server", "index.ts")],
@@ -26,14 +35,7 @@ await esbuild.build({
   target: "node20",
   format: "cjs",
   sourcemap: true,
-  external: [
-    "bcrypt",
-    "better-sqlite3",
-    "@whiskeysockets/baileys",
-    "telegram",
-    "bufferutil",
-    "utf-8-validate",
-  ],
+  external: allDeps,
   define: {
     "import.meta.dirname": "__dirname",
   },
