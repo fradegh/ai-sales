@@ -1,0 +1,147 @@
+/**
+ * HTTP client for the Podzamenu lookup service (FastAPI).
+ * Looks up vehicle info (OEM gearbox, etc.) by VIN or FRAME.
+ */
+
+const DEFAULT_URL = "http://localhost:8200";
+const TIMEOUT_MS = 30_000;
+
+export const PODZAMENU_NOT_FOUND = "NOT_FOUND" as const;
+
+export interface LookupRequest {
+  idType: "VIN" | "FRAME";
+  value: string;
+}
+
+export interface GearboxOemCandidate {
+  oem: string;
+  name: string;
+}
+
+export interface GearboxInfo {
+  model: string | null;
+  oem: string | null;
+  oemCandidates: GearboxOemCandidate[];
+  oemStatus: "FOUND" | "NOT_FOUND" | "NOT_AVAILABLE";
+}
+
+export interface LookupResponse {
+  vehicleMeta: Record<string, unknown>;
+  gearbox: GearboxInfo;
+  evidence: Record<string, unknown>;
+}
+
+export class PodzamenuLookupError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly statusCode?: number
+  ) {
+    super(message);
+    this.name = "PodzamenuLookupError";
+  }
+}
+
+export async function lookupByVehicleId(
+  request: LookupRequest
+): Promise<LookupResponse> {
+  const baseUrl =
+    process.env.PODZAMENU_LOOKUP_SERVICE_URL?.trim() || DEFAULT_URL;
+  const url = `${baseUrl.replace(/\/$/, "")}/lookup`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        idType: request.idType,
+        value: request.value,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (res.status === 404) {
+      throw new PodzamenuLookupError(
+        PODZAMENU_NOT_FOUND,
+        PODZAMENU_NOT_FOUND,
+        404
+      );
+    }
+
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body.detail) {
+          detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+        } else if (body.message) {
+          detail = body.message;
+        }
+      } catch {
+        const text = await res.text();
+        if (text) detail = text.slice(0, 200);
+      }
+      throw new PodzamenuLookupError(
+        `Podzamenu lookup failed: ${detail}`,
+        "LOOKUP_ERROR",
+        res.status
+      );
+    }
+
+    const data = (await res.json()) as LookupResponse;
+    if (!data || !data.gearbox || typeof data.gearbox.oemStatus !== "string") {
+      throw new PodzamenuLookupError(
+        "Invalid response from Podzamenu: missing gearbox",
+        "INVALID_RESPONSE"
+      );
+    }
+
+    const gearbox: GearboxInfo = {
+      model: data.gearbox.model ?? null,
+      oem: data.gearbox.oem ?? null,
+      oemCandidates: Array.isArray(data.gearbox.oemCandidates)
+        ? data.gearbox.oemCandidates
+        : [],
+      oemStatus: data.gearbox.oemStatus,
+    };
+
+    return {
+      vehicleMeta: data.vehicleMeta ?? {},
+      gearbox,
+      evidence: data.evidence ?? {},
+    };
+  } catch (err) {
+    clearTimeout(timeoutId);
+
+    if (err instanceof PodzamenuLookupError) {
+      throw err;
+    }
+    if (err instanceof SyntaxError) {
+      throw new PodzamenuLookupError(
+        "Invalid JSON response from Podzamenu",
+        "INVALID_RESPONSE"
+      );
+    }
+    if (err instanceof Error) {
+      if (err.name === "AbortError") {
+        throw new PodzamenuLookupError(
+          `Podzamenu lookup timeout after ${TIMEOUT_MS / 1000}s`,
+          "TIMEOUT"
+        );
+      }
+      throw new PodzamenuLookupError(
+        `Podzamenu lookup failed: ${err.message}`,
+        "NETWORK_ERROR"
+      );
+    }
+    throw new PodzamenuLookupError(
+      "Podzamenu lookup failed: unknown error",
+      "UNKNOWN"
+    );
+  }
+}
