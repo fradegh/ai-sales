@@ -30,6 +30,13 @@ import {
   Smartphone,
   Lock,
   Zap,
+  Plus,
+  Trash2,
+  Power,
+  PowerOff,
+  QrCode,
+  Phone,
+  User,
 } from "lucide-react";
 import { useBillingStatus, isSubscriptionRequired } from "@/hooks/use-billing";
 import { SubscriptionPaywall, ChannelPaywallOverlay, SubscriptionBadge } from "@/components/subscription-paywall";
@@ -729,7 +736,7 @@ interface ChannelStatus {
   };
 }
 
-type AuthStep = "idle" | "qr" | "2fa" | "success";
+type AuthStep = "idle" | "method-select" | "phone-input" | "phone-code" | "qr" | "2fa" | "success";
 
 interface TelegramBotCardProps {
   channelStatuses?: ChannelStatus[];
@@ -885,6 +892,20 @@ function TelegramBotCard({
   );
 }
 
+interface TelegramAccount {
+  id: string;
+  phoneNumber: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  username: string | null;
+  userId: string | null;
+  status: string;
+  authMethod: string | null;
+  isEnabled: boolean;
+  isConnected: boolean;
+  createdAt: string;
+}
+
 interface TelegramPersonalCardProps {
   channelStatuses?: ChannelStatus[];
   featureFlags?: Record<string, boolean>;
@@ -896,15 +917,33 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
   const { toast } = useToast();
   const [authStep, setAuthStep] = useState<AuthStep>("idle");
   const [password, setPassword] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [phoneCode, setPhoneCode] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentAccountId, setCurrentAccountId] = useState<string | null>(null);
   const [qrImageDataUrl, setQrImageDataUrl] = useState<string | null>(null);
   const [qrExpiresAt, setQrExpiresAt] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [connectedUser, setConnectedUser] = useState<{ firstName?: string; username?: string } | null>(null);
+  const [codeResendTimer, setCodeResendTimer] = useState(0);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const resendTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const telegramPersonalStatus = channelStatuses?.find(c => c.channel === "telegram_personal");
   const telegramPersonalEnabled = featureFlags?.TELEGRAM_PERSONAL_CHANNEL_ENABLED ?? false;
+
+  // Fetch accounts list
+  const { data: accountsData, refetch: refetchAccounts } = useQuery({
+    queryKey: ["/api/telegram-personal/accounts"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/telegram-personal/accounts");
+      return response.json();
+    },
+    enabled: telegramPersonalEnabled,
+    refetchInterval: 10000,
+  });
+
+  const accounts: TelegramAccount[] = accountsData?.accounts ?? [];
+  const activeAccounts = accounts.filter(a => a.status === "active");
+  const hasConnected = activeAccounts.some(a => a.isConnected);
 
   const stopPolling = () => {
     if (pollIntervalRef.current) {
@@ -913,19 +952,142 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
     }
   };
 
+  const startResendTimer = () => {
+    setCodeResendTimer(60);
+    if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    resendTimerRef.current = setInterval(() => {
+      setCodeResendTimer(prev => {
+        if (prev <= 1) {
+          if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const resetAuthState = () => {
+    stopPolling();
+    setAuthStep("idle");
+    setSessionId(null);
+    setCurrentAccountId(null);
+    setQrImageDataUrl(null);
+    setQrExpiresAt(null);
+    setPassword("");
+    setPhoneNumber("");
+    setPhoneCode("");
+    setCodeResendTimer(0);
+    if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+  };
+
+  // --- Phone auth flow ---
+  const startPhoneAuth = async () => {
+    if (!phoneNumber.trim()) {
+      toast({ title: "Введите номер телефона", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const response = await apiRequest("POST", "/api/telegram-personal/accounts/send-code", { phoneNumber });
+      const result = await response.json();
+
+      if (result.success) {
+        setSessionId(result.sessionId);
+        setCurrentAccountId(result.accountId);
+        setAuthStep("phone-code");
+        startResendTimer();
+        toast({ title: "Код отправлен", description: "Проверьте Telegram или SMS" });
+      } else {
+        toast({ title: "Ошибка", description: result.error, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Ошибка", description: error.message || "Не удалось отправить код", variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const verifyPhoneCode = async () => {
+    if (!phoneCode.trim() || phoneCode.length < 5) {
+      toast({ title: "Введите код", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const response = await apiRequest("POST", "/api/telegram-personal/accounts/verify-code", {
+        accountId: currentAccountId,
+        sessionId,
+        phoneNumber,
+        code: phoneCode,
+      });
+      const result = await response.json();
+
+      if (result.success) {
+        setAuthStep("success");
+        toast({ title: "Авторизация успешна", description: `Аккаунт подключен` });
+        refetchAccounts();
+        refetch();
+      } else if (result.needs2FA) {
+        setAuthStep("2fa");
+        toast({ title: "Требуется 2FA", description: "Введите пароль двухфакторной аутентификации" });
+      } else {
+        toast({ title: "Ошибка", description: result.error, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Ошибка", description: error.message || "Неверный код", variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const verify2FA = async () => {
+    if (!password.trim()) {
+      toast({ title: "Введите пароль", variant: "destructive" });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const is2FAForQr = authStep === "2fa" && sessionId?.startsWith("tg_qr_");
+      const url = is2FAForQr
+        ? "/api/telegram-personal/accounts/verify-qr-2fa"
+        : "/api/telegram-personal/accounts/verify-password";
+
+      const response = await apiRequest("POST", url, {
+        accountId: currentAccountId,
+        sessionId,
+        password,
+      });
+      const result = await response.json();
+
+      if (result.success) {
+        setAuthStep("success");
+        toast({ title: "Авторизация успешна" });
+        refetchAccounts();
+        refetch();
+      } else {
+        toast({ title: "Ошибка", description: result.error || "Неверный пароль", variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Ошибка", description: error.message || "Не удалось проверить пароль", variant: "destructive" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // --- QR auth flow ---
   const startQrAuth = async () => {
     setIsLoading(true);
     try {
-      const response = await apiRequest("POST", "/api/telegram-personal/start-qr-auth", {});
+      const response = await apiRequest("POST", "/api/telegram-personal/accounts/start-qr", {});
       const result = await response.json();
-      
+
       if (result.success) {
         setSessionId(result.sessionId);
+        setCurrentAccountId(result.accountId);
         setQrImageDataUrl(result.qrImageDataUrl);
         setQrExpiresAt(result.expiresAt);
         setAuthStep("qr");
-        
-        pollIntervalRef.current = setInterval(() => checkQrAuth(result.sessionId), 2000);
+        pollIntervalRef.current = setInterval(() => checkQrAuth(result.sessionId, result.accountId), 2000);
       } else {
         toast({ title: "Ошибка", description: result.error, variant: "destructive" });
       }
@@ -936,26 +1098,28 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
     }
   };
 
-  const checkQrAuth = async (sid: string) => {
+  const checkQrAuth = async (sid: string, accId: string) => {
     try {
-      const response = await apiRequest("POST", "/api/telegram-personal/check-qr-auth", { sessionId: sid });
+      const response = await apiRequest("POST", "/api/telegram-personal/accounts/check-qr", {
+        sessionId: sid,
+        accountId: accId,
+      });
       const result = await response.json();
-      
+
       if (result.status === "authorized") {
         stopPolling();
-        setConnectedUser(result.user);
         setAuthStep("success");
-        toast({ title: "Авторизация успешна", description: `Аккаунт: ${result.user?.firstName || "подключен"}` });
+        toast({ title: "Авторизация успешна" });
+        refetchAccounts();
         refetch();
       } else if (result.status === "needs_2fa") {
         stopPolling();
         setAuthStep("2fa");
-        toast({ title: "Требуется 2FA", description: "Введите пароль двухфакторной аутентификации" });
+        toast({ title: "Требуется 2FA" });
       } else if (result.status === "expired") {
         stopPolling();
-        toast({ title: "QR-код истек", description: "Нажмите кнопку для получения нового", variant: "destructive" });
-        setAuthStep("idle");
-        setQrImageDataUrl(null);
+        toast({ title: "QR-код истек", variant: "destructive" });
+        resetAuthState();
       } else if (result.qrImageDataUrl) {
         setQrImageDataUrl(result.qrImageDataUrl);
         setQrExpiresAt(result.expiresAt);
@@ -965,55 +1129,54 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
     }
   };
 
-  const verify2FA = async () => {
-    if (!password.trim()) {
-      toast({ title: "Введите пароль", variant: "destructive" });
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const response = await apiRequest("POST", "/api/telegram-personal/verify-qr-2fa", {
-        sessionId,
-        password,
-      });
-      const result = await response.json();
-      
-      if (result.success) {
-        setConnectedUser(result.user);
-        setAuthStep("success");
-        toast({ title: "Авторизация успешна", description: `Аккаунт: ${result.user?.firstName || "подключен"}` });
-        refetch();
-      } else {
-        toast({ title: "Ошибка", description: result.error, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "Ошибка", description: error.message || "Не удалось проверить пароль", variant: "destructive" });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const cancelAuth = async () => {
     stopPolling();
     if (sessionId) {
       try {
-        await apiRequest("POST", "/api/telegram-personal/cancel-auth", { sessionId });
-      } catch {
-        // ignore
-      }
+        await apiRequest("POST", "/api/telegram-personal/accounts/cancel-auth", {
+          sessionId,
+          accountId: currentAccountId,
+        });
+      } catch {}
     }
-    setAuthStep("idle");
-    setSessionId(null);
-    setQrImageDataUrl(null);
-    setPassword("");
+    resetAuthState();
+  };
+
+  // --- Account management ---
+  const deleteAccount = async (accountId: string) => {
+    try {
+      await apiRequest("DELETE", `/api/telegram-personal/accounts/${accountId}`);
+      toast({ title: "Аккаунт удалён" });
+      refetchAccounts();
+      refetch();
+    } catch (error: any) {
+      toast({ title: "Ошибка", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const toggleAccount = async (accountId: string, enabled: boolean) => {
+    try {
+      await apiRequest("PATCH", `/api/telegram-personal/accounts/${accountId}`, { isEnabled: enabled });
+      toast({ title: enabled ? "Аккаунт включен" : "Аккаунт отключен" });
+      refetchAccounts();
+    } catch (error: any) {
+      toast({ title: "Ошибка", description: error.message, variant: "destructive" });
+    }
   };
 
   useEffect(() => {
-    return () => stopPolling();
+    return () => {
+      stopPolling();
+      if (resendTimerRef.current) clearInterval(resendTimerRef.current);
+    };
   }, []);
 
-  const isConnected = telegramPersonalStatus?.connected || authStep === "success";
+  // Auto-submit phone code when 5+ digits entered
+  useEffect(() => {
+    if (authStep === "phone-code" && phoneCode.length >= 5 && !isLoading) {
+      verifyPhoneCode();
+    }
+  }, [phoneCode]);
 
   return (
     <Card>
@@ -1021,10 +1184,10 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
         <CardTitle className="flex items-center gap-2">
           <Link2 className="h-5 w-5" />
           Telegram Personal
-          {isConnected ? (
+          {hasConnected ? (
             <Badge variant="outline" className="bg-green-500/10 text-green-600">
               <CheckCircle2 className="mr-1 h-3 w-3" />
-              Подключен
+              {activeAccounts.length} акк.
             </Badge>
           ) : telegramPersonalEnabled ? (
             <Badge variant="outline" className="bg-yellow-500/10 text-yellow-600">
@@ -1039,7 +1202,7 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
           )}
         </CardTitle>
         <CardDescription>
-          Подключите личный аккаунт Telegram для отправки сообщений клиентам
+          Подключите личные аккаунты Telegram для отправки сообщений клиентам
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -1047,7 +1210,7 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
           <div>
             <Label>Включить Telegram Personal</Label>
             <p className="text-xs text-muted-foreground mt-1">
-              Использовать личный аккаунт для переписки
+              Использовать личные аккаунты для переписки
             </p>
           </div>
           <Switch
@@ -1060,60 +1223,159 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
 
         {telegramPersonalEnabled && (
           <>
-            {isConnected && connectedUser ? (
-              <div className="rounded-md border p-4 bg-green-500/5">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-600" />
-                  <div>
-                    <p className="font-medium">Аккаунт подключен</p>
-                    <p className="text-sm text-muted-foreground">
-                      {connectedUser.firstName} {connectedUser.username ? `(@${connectedUser.username})` : ""}
-                    </p>
+            {/* Account list */}
+            {accounts.length > 0 && authStep === "idle" && (
+              <div className="space-y-2">
+                {accounts.filter(a => a.status === "active").map(account => (
+                  <div key={account.id} className="rounded-md border p-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={cn(
+                        "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
+                        account.isConnected ? "bg-green-500/10 text-green-600" : "bg-muted text-muted-foreground"
+                      )}>
+                        <User className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {account.firstName || account.phoneNumber || "Telegram"}
+                          {account.username ? ` (@${account.username})` : ""}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {account.isConnected ? "Активен" : account.isEnabled ? "Отключен от сервера" : "Выключен"}
+                          {account.authMethod === "phone" ? " · Телефон" : account.authMethod === "qr" ? " · QR" : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        variant="ghost" size="icon" className="h-8 w-8"
+                        onClick={() => toggleAccount(account.id, !account.isEnabled)}
+                        title={account.isEnabled ? "Выключить" : "Включить"}
+                      >
+                        {account.isEnabled ? <Power className="h-4 w-4 text-green-600" /> : <PowerOff className="h-4 w-4 text-muted-foreground" />}
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive"
+                        onClick={() => deleteAccount(account.id)}
+                        title="Удалить"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
-            ) : telegramPersonalStatus?.connected && telegramPersonalStatus.botInfo ? (
-              <div className="rounded-md border p-4 bg-green-500/5">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-5 w-5 text-green-600" />
-                  <div>
-                    <p className="font-medium">Аккаунт подключен</p>
-                    <p className="text-sm text-muted-foreground">
-                      {telegramPersonalStatus.botInfo.first_name} {telegramPersonalStatus.botInfo.username ? `(@${telegramPersonalStatus.botInfo.username})` : ""}
+            )}
+
+            {/* Add account or auth flow */}
+            {authStep === "idle" ? (
+              <Button
+                variant="outline"
+                onClick={() => setAuthStep("method-select")}
+                disabled={accounts.filter(a => a.status === "active").length >= 5}
+                data-testid="button-telegram-add-account"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Добавить аккаунт
+              </Button>
+            ) : authStep === "method-select" ? (
+              <div className="space-y-3">
+                <p className="text-sm font-medium">Выберите способ авторизации</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    className="rounded-lg border-2 border-muted p-4 hover:border-primary transition-colors text-left"
+                    onClick={() => setAuthStep("phone-input")}
+                  >
+                    <Phone className="h-6 w-6 mb-2 text-primary" />
+                    <p className="font-medium text-sm">По номеру телефона</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Код подтверждения придёт в Telegram или SMS
                     </p>
-                  </div>
+                  </button>
+                  <button
+                    className="rounded-lg border-2 border-muted p-4 hover:border-primary transition-colors text-left"
+                    onClick={startQrAuth}
+                    disabled={isLoading}
+                  >
+                    <QrCode className="h-6 w-6 mb-2 text-primary" />
+                    <p className="font-medium text-sm">По QR-коду</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Отсканируйте в приложении Telegram
+                    </p>
+                  </button>
                 </div>
-              </div>
-            ) : authStep === "idle" ? (
-              <div className="space-y-4">
-                <div className="rounded-md border p-4 bg-muted/30">
-                  <p className="text-sm mb-3">
-                    Для подключения аккаунта отсканируйте QR-код в приложении Telegram на телефоне
-                  </p>
-                  <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
-                    <li>Откройте Telegram на телефоне</li>
-                    <li>Перейдите в Настройки - Устройства</li>
-                    <li>Нажмите "Подключить устройство"</li>
-                    <li>Отсканируйте QR-код ниже</li>
-                  </ol>
-                </div>
-                <Button onClick={startQrAuth} disabled={isLoading} data-testid="button-telegram-start-qr">
-                  {isLoading ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Link2 className="mr-2 h-4 w-4" />
-                  )}
-                  Получить QR-код
+                <Button variant="ghost" size="sm" onClick={resetAuthState}>
+                  Отмена
                 </Button>
+              </div>
+            ) : authStep === "phone-input" ? (
+              <div className="space-y-4">
+                <div>
+                  <Label className="mb-2 block">Номер телефона</Label>
+                  <Input
+                    type="tel"
+                    placeholder="+7 999 123 45 67"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && startPhoneAuth()}
+                    data-testid="input-telegram-phone"
+                    autoFocus
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    В международном формате, например: +79991234567
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={startPhoneAuth} disabled={isLoading || !phoneNumber.trim()}>
+                    {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Smartphone className="mr-2 h-4 w-4" />}
+                    Получить код
+                  </Button>
+                  <Button variant="outline" onClick={resetAuthState} disabled={isLoading}>Отмена</Button>
+                </div>
+              </div>
+            ) : authStep === "phone-code" ? (
+              <div className="space-y-4">
+                <div>
+                  <Label className="mb-2 block">Код подтверждения</Label>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="12345"
+                    maxLength={6}
+                    value={phoneCode}
+                    onChange={(e) => setPhoneCode(e.target.value.replace(/\D/g, ""))}
+                    data-testid="input-telegram-code"
+                    autoFocus
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Код отправлен на {phoneNumber}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={verifyPhoneCode} disabled={isLoading || phoneCode.length < 5}>
+                    {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+                    Подтвердить
+                  </Button>
+                  {codeResendTimer > 0 ? (
+                    <span className="text-xs text-muted-foreground">
+                      Повторно через {codeResendTimer} сек
+                    </span>
+                  ) : (
+                    <Button variant="ghost" size="sm" onClick={startPhoneAuth} disabled={isLoading}>
+                      Отправить повторно
+                    </Button>
+                  )}
+                  <Button variant="outline" onClick={cancelAuth} disabled={isLoading}>Отмена</Button>
+                </div>
               </div>
             ) : authStep === "qr" ? (
               <div className="space-y-4">
                 <div className="flex flex-col items-center">
                   {qrImageDataUrl ? (
                     <div className="p-4 bg-white rounded-lg">
-                      <img 
-                        src={qrImageDataUrl} 
-                        alt="QR код для авторизации" 
+                      <img
+                        src={qrImageDataUrl}
+                        alt="QR код для авторизации"
                         className="w-64 h-64"
                         data-testid="img-telegram-qr"
                       />
@@ -1124,18 +1386,14 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
                     </div>
                   )}
                   <p className="text-sm text-muted-foreground mt-4 text-center">
-                    Отсканируйте QR-код в приложении Telegram
+                    Откройте Telegram → Настройки → Устройства → Подключить устройство
                   </p>
                   {qrExpiresAt && (
-                    <p className="text-xs text-muted-foreground">
-                      Код обновляется автоматически
-                    </p>
+                    <p className="text-xs text-muted-foreground">Код обновляется автоматически</p>
                   )}
                 </div>
                 <div className="flex justify-center">
-                  <Button variant="outline" onClick={cancelAuth}>
-                    Отмена
-                  </Button>
+                  <Button variant="outline" onClick={cancelAuth}>Отмена</Button>
                 </div>
               </div>
             ) : authStep === "2fa" ? (
@@ -1147,25 +1405,34 @@ function TelegramPersonalCard({ channelStatuses, featureFlags, toggleChannelMuta
                     placeholder="Пароль двухфакторной аутентификации"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && verify2FA()}
                     data-testid="input-telegram-2fa"
+                    autoFocus
                   />
                   <p className="text-xs text-muted-foreground mt-1">
-                    Введите пароль, установленный в настройках безопасности Telegram
+                    Введите облачный пароль из настроек безопасности Telegram
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={verify2FA} disabled={isLoading} data-testid="button-telegram-verify-2fa">
-                    {isLoading ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <CheckCircle2 className="mr-2 h-4 w-4" />
-                    )}
+                    {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Lock className="mr-2 h-4 w-4" />}
                     Подтвердить
                   </Button>
-                  <Button variant="outline" onClick={cancelAuth} disabled={isLoading}>
-                    Отмена
-                  </Button>
+                  <Button variant="outline" onClick={cancelAuth} disabled={isLoading}>Отмена</Button>
                 </div>
+              </div>
+            ) : authStep === "success" ? (
+              <div className="rounded-md border p-4 bg-green-500/5">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-green-600" />
+                  <div>
+                    <p className="font-medium">Аккаунт успешно подключен!</p>
+                    <p className="text-sm text-muted-foreground">Входящие сообщения будут приходить автоматически</p>
+                  </div>
+                </div>
+                <Button variant="outline" size="sm" className="mt-3" onClick={resetAuthState}>
+                  Готово
+                </Button>
               </div>
             ) : null}
           </>

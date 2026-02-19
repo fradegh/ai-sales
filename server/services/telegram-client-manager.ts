@@ -8,7 +8,8 @@ import { featureFlagService } from "./feature-flags";
 
 interface ActiveConnection {
   tenantId: string;
-  channelId: string;
+  accountId: string;
+  channelId: string | null;
   client: TelegramClient;
   sessionString: string;
   connected: boolean;
@@ -61,44 +62,75 @@ class TelegramClientManager {
       return;
     }
 
-    console.log("[TelegramClientManager] Initializing...");
+    console.log("[TelegramClientManager] Initializing multi-account...");
 
     try {
-      const channels = await storage.getChannelsByType("telegram_personal");
-      console.log(`[TelegramClientManager] Found ${channels.length} Telegram Personal channels`);
+      const accounts = await storage.getActiveTelegramAccounts();
+      console.log(`[TelegramClientManager] Found ${accounts.length} active Telegram accounts`);
 
-      for (const channel of channels) {
-        const config = channel.config as { sessionData?: string } | null;
-        console.log(`[TelegramClientManager] Channel ${channel.id}: isActive=${channel.isActive}, hasSession=${!!config?.sessionData}, sessionLen=${config?.sessionData?.length || 0}`);
-        
-        if (channel.isActive && config?.sessionData) {
-          try {
-            const connected = await this.connect(channel.tenantId, channel.id, config.sessionData);
-            console.log(`[TelegramClientManager] Channel ${channel.id} connect result: ${connected}`);
-          } catch (error: any) {
-            console.error(`[TelegramClientManager] Failed to connect channel ${channel.id}:`, error.message);
-          }
-        } else {
-          console.log(`[TelegramClientManager] Skipping channel ${channel.id}: inactive or no session`);
+      for (const account of accounts) {
+        if (!account.sessionString) {
+          console.log(`[TelegramClientManager] Account ${account.id}: no session, skipping`);
+          continue;
+        }
+
+        try {
+          const connected = await this.connectAccount(account.tenantId, account.id, account.channelId, account.sessionString);
+          console.log(`[TelegramClientManager] Account ${account.id} connect result: ${connected}`);
+        } catch (error: any) {
+          console.error(`[TelegramClientManager] Failed to connect account ${account.id}:`, error.message);
         }
       }
 
+      // Also load legacy channels that aren't yet migrated to telegramSessions
+      await this.initializeLegacyChannels();
+
       this.isInitialized = true;
       console.log(`[TelegramClientManager] Initialized with ${this.connections.size} active connections`);
-      
+
       this.startHealthCheck();
     } catch (error: any) {
       console.error("[TelegramClientManager] Initialization error:", error.message);
     }
   }
-  
+
+  private async initializeLegacyChannels(): Promise<void> {
+    try {
+      const channels = await storage.getChannelsByType("telegram_personal");
+      for (const channel of channels) {
+        const config = channel.config as { sessionData?: string } | null;
+        if (!channel.isActive || !config?.sessionData) continue;
+
+        const connectionKey = `${channel.tenantId}:legacy_${channel.id}`;
+        if (this.connections.has(connectionKey)) continue;
+
+        // Check if already connected via telegramSessions
+        const alreadyConnected = Array.from(this.connections.values()).some(
+          c => c.tenantId === channel.tenantId && c.channelId === channel.id
+        );
+        if (alreadyConnected) continue;
+
+        try {
+          const connected = await this.connect(channel.tenantId, channel.id, config.sessionData);
+          if (connected) {
+            console.log(`[TelegramClientManager] Legacy channel ${channel.id} connected`);
+          }
+        } catch (error: any) {
+          console.error(`[TelegramClientManager] Failed to connect legacy channel ${channel.id}:`, error.message);
+        }
+      }
+    } catch (error: any) {
+      console.error("[TelegramClientManager] Legacy init error:", error.message);
+    }
+  }
+
   private startHealthCheck(): void {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
     }
-    
+
     this.healthCheckTimer = setInterval(async () => {
-      await this.cleanupInactiveChannels();
+      await this.cleanupInactiveConnections();
     }, 60000);
 
     if (this.heartbeatTimer) {
@@ -115,7 +147,7 @@ class TelegramClientManager {
     if (activeCount === 0) return;
 
     console.log(`[TelegramClientManager] Heartbeat: ${activeCount} active connections`);
-    
+
     for (const [key, connection] of Array.from(this.connections.entries())) {
       try {
         await connection.client.getMe();
@@ -123,19 +155,27 @@ class TelegramClientManager {
       } catch (error: any) {
         console.error(`[TelegramClientManager] Heartbeat FAILED: ${key} - ${error.message}`);
         connection.connected = false;
-        this.scheduleReconnect(connection.tenantId, connection.channelId, connection.sessionString);
+        this.scheduleReconnect(key, connection);
       }
     }
   }
-  
-  private async cleanupInactiveChannels(): Promise<void> {
+
+  private async cleanupInactiveConnections(): Promise<void> {
     try {
       for (const [key, connection] of Array.from(this.connections.entries())) {
-        const channel = await storage.getChannel(connection.channelId);
-        
-        if (!channel || !channel.isActive) {
-          console.log(`[TelegramClientManager] Cleaning up inactive channel: ${key}`);
-          await this.disconnect(connection.tenantId, connection.channelId);
+        if (connection.accountId.startsWith("legacy_")) {
+          const channelId = connection.accountId.replace("legacy_", "");
+          const channel = await storage.getChannel(channelId);
+          if (!channel || !channel.isActive) {
+            console.log(`[TelegramClientManager] Cleaning up inactive legacy channel: ${key}`);
+            await this.disconnectByKey(key);
+          }
+        } else {
+          const account = await storage.getTelegramAccountById(connection.accountId);
+          if (!account || !account.isEnabled || account.status !== "active") {
+            console.log(`[TelegramClientManager] Cleaning up inactive account: ${key}`);
+            await this.disconnectByKey(key);
+          }
         }
       }
     } catch (error: any) {
@@ -143,8 +183,93 @@ class TelegramClientManager {
     }
   }
 
+  /** Connect a multi-account session (from telegramSessions table) */
+  async connectAccount(tenantId: string, accountId: string, channelId: string | null, sessionString: string): Promise<boolean> {
+    const connectionKey = `${tenantId}:${accountId}`;
+
+    const existing = this.connections.get(connectionKey);
+    if (existing?.connected && existing.handlersAttached) {
+      console.log(`[TelegramClientManager] Already connected: ${connectionKey}`);
+      return true;
+    }
+
+    if (existing) {
+      console.log(`[TelegramClientManager] Cleaning up stale connection: ${connectionKey}`);
+      try { await existing.client.disconnect(); } catch {}
+      this.connections.delete(connectionKey);
+    }
+
+    const existingTimer = this.reconnectTimers.get(connectionKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.reconnectTimers.delete(connectionKey);
+    }
+
+    const credentials = await this.getCredentials();
+    if (!credentials) {
+      console.error("[TelegramClientManager] No credentials available");
+      return false;
+    }
+
+    try {
+      const { apiId, apiHash } = credentials;
+      const session = new StringSession(sessionString);
+      const client = new TelegramClient(session, apiId, apiHash, {
+        connectionRetries: 5,
+      });
+
+      console.log(`[TelegramClientManager] Connecting account ${connectionKey}...`);
+      await client.connect();
+
+      const isAuthorized = await client.isUserAuthorized();
+      if (!isAuthorized) {
+        console.error(`[TelegramClientManager] Session invalid for ${connectionKey}`);
+        await storage.updateTelegramAccount(accountId, { status: "error", lastError: "Session invalid" });
+        return false;
+      }
+
+      const me = await client.getMe();
+      console.log(`[TelegramClientManager] Account ${connectionKey}: ${(me as any)?.firstName || 'OK'}`);
+
+      const connection: ActiveConnection = {
+        tenantId,
+        accountId,
+        channelId,
+        client,
+        sessionString,
+        connected: true,
+        lastActivity: new Date(),
+        handlersAttached: false,
+      };
+
+      this.connections.set(connectionKey, connection);
+      this.ensureHandlers(connection);
+
+      try {
+        const dialogs = await client.getDialogs({ limit: 100 });
+        console.log(`[TelegramClientManager] Preloaded ${dialogs.length} dialogs for entity cache`);
+      } catch (dialogError: any) {
+        console.log(`[TelegramClientManager] Could not preload dialogs: ${dialogError.message}`);
+      }
+
+      console.log(`[TelegramClientManager] Connected: ${connectionKey}, total: ${this.connections.size}`);
+      return true;
+    } catch (error: any) {
+      console.error(`[TelegramClientManager] Connection error for ${connectionKey}:`, error.message);
+      const conn: ActiveConnection = {
+        tenantId, accountId, channelId,
+        client: null as any, sessionString,
+        connected: false, lastActivity: new Date(), handlersAttached: false,
+      };
+      this.scheduleReconnect(`${tenantId}:${accountId}`, conn);
+      return false;
+    }
+  }
+
+  /** Legacy connect method (backward compatible with old channelId-based approach) */
   async connect(tenantId: string, channelId: string, sessionString: string): Promise<boolean> {
-    const connectionKey = `${tenantId}:${channelId}`;
+    const legacyAccountId = `legacy_${channelId}`;
+    const connectionKey = `${tenantId}:${legacyAccountId}`;
 
     const existing = this.connections.get(connectionKey);
     if (existing?.connected && existing.handlersAttached) {
@@ -154,9 +279,7 @@ class TelegramClientManager {
 
     if (existing) {
       console.log(`[TelegramClientManager] Cleaning up stale connection: ${connectionKey}`);
-      try {
-        await existing.client.disconnect();
-      } catch {}
+      try { await existing.client.disconnect(); } catch {}
       this.connections.delete(connectionKey);
     }
 
@@ -185,7 +308,7 @@ class TelegramClientManager {
 
       const isAuthorized = await client.isUserAuthorized();
       console.log(`[TelegramClientManager] isUserAuthorized for ${connectionKey}: ${isAuthorized}`);
-      
+
       if (!isAuthorized) {
         console.error(`[TelegramClientManager] Session invalid for ${connectionKey}`);
         return false;
@@ -196,6 +319,7 @@ class TelegramClientManager {
 
       const connection: ActiveConnection = {
         tenantId,
+        accountId: legacyAccountId,
         channelId,
         client,
         sessionString,
@@ -203,12 +327,10 @@ class TelegramClientManager {
         lastActivity: new Date(),
         handlersAttached: false,
       };
-      
-      this.connections.set(connectionKey, connection);
 
+      this.connections.set(connectionKey, connection);
       this.ensureHandlers(connection);
-      
-      // Preload dialogs to populate entity cache for sending messages
+
       try {
         const dialogs = await client.getDialogs({ limit: 100 });
         console.log(`[TelegramClientManager] Preloaded ${dialogs.length} dialogs for entity cache`);
@@ -220,27 +342,31 @@ class TelegramClientManager {
       return true;
     } catch (error: any) {
       console.error(`[TelegramClientManager] Connection error for ${connectionKey}:`, error.message);
-      this.scheduleReconnect(tenantId, channelId, sessionString);
+      const conn: ActiveConnection = {
+        tenantId, accountId: legacyAccountId, channelId,
+        client: null as any, sessionString,
+        connected: false, lastActivity: new Date(), handlersAttached: false,
+      };
+      this.scheduleReconnect(connectionKey, conn);
       return false;
     }
   }
 
   private ensureHandlers(connection: ActiveConnection): void {
     if (connection.handlersAttached) {
-      console.log(`[TelegramClientManager] Handlers already attached for ${connection.tenantId}:${connection.channelId}`);
       return;
     }
 
-    const connectionKey = `${connection.tenantId}:${connection.channelId}`;
+    const connectionKey = `${connection.tenantId}:${connection.accountId}`;
     console.log(`[TelegramClientManager] Attaching NewMessage handler for ${connectionKey}`);
 
     connection.client.addEventHandler(
       (event: NewMessageEvent) => {
         const msg = event.message;
         console.log(`[TG EVENT] ${connectionKey} | out=${msg.out} | chatId=${msg.chatId} | senderId=${msg.senderId} | text=${(msg.text || '').substring(0, 50)}`);
-        
+
         if (!msg.out) {
-          this.handleNewMessage(connection.tenantId, connection.channelId, event);
+          this.handleNewMessage(connection.tenantId, connection.accountId, connection.channelId, event);
         }
       },
       new NewMessage({})
@@ -250,24 +376,21 @@ class TelegramClientManager {
     console.log(`[TelegramClientManager] Handlers attached for ${connectionKey}`);
   }
 
-  private async handleNewMessage(tenantId: string, channelId: string, event: NewMessageEvent): Promise<void> {
+  private async handleNewMessage(tenantId: string, accountId: string, channelId: string | null, event: NewMessageEvent): Promise<void> {
     try {
       const isEnabled = await featureFlagService.isEnabled("TELEGRAM_PERSONAL_CHANNEL_ENABLED");
-      if (!isEnabled) {
-        return;
-      }
+      if (!isEnabled) return;
 
-      const channel = await storage.getChannel(channelId);
-      if (!channel?.isActive) {
-        console.log(`[TelegramClientManager] Channel ${channelId} is inactive, skipping message`);
-        return;
+      if (channelId) {
+        const channel = await storage.getChannel(channelId);
+        if (!channel?.isActive) {
+          console.log(`[TelegramClientManager] Channel ${channelId} is inactive, skipping message`);
+          return;
+        }
       }
 
       const message = event.message;
-
-      if (message.out) {
-        return;
-      }
+      if (message.out) return;
 
       const senderId = message.senderId?.toString() || "";
       const chatId = message.chatId?.toString() || "";
@@ -280,7 +403,7 @@ class TelegramClientManager {
 
       console.log(`[TelegramClientManager] New message from ${senderId} in chat ${chatId}: ${text.substring(0, 50)}...`);
 
-      const connectionKey = `${tenantId}:${channelId}`;
+      const connectionKey = `${tenantId}:${accountId}`;
       const connection = this.connections.get(connectionKey);
       if (connection) {
         connection.lastActivity = new Date();
@@ -292,8 +415,7 @@ class TelegramClientManager {
         if (sender && "firstName" in sender) {
           senderName = [sender.firstName, sender.lastName].filter(Boolean).join(" ") || "Unknown";
         }
-      } catch {
-      }
+      } catch {}
 
       await processIncomingMessageFull(tenantId, {
         channel: "telegram_personal",
@@ -304,6 +426,7 @@ class TelegramClientManager {
         timestamp: new Date((message.date || 0) * 1000),
         metadata: {
           channelId,
+          accountId,
           senderName,
           isPrivate: message.isPrivate,
           isGroup: message.isGroup,
@@ -315,9 +438,7 @@ class TelegramClientManager {
     }
   }
 
-  private scheduleReconnect(tenantId: string, channelId: string, sessionString: string): void {
-    const connectionKey = `${tenantId}:${channelId}`;
-
+  private scheduleReconnect(connectionKey: string, connection: ActiveConnection): void {
     const existingTimer = this.reconnectTimers.get(connectionKey);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -326,16 +447,36 @@ class TelegramClientManager {
     const timer = setTimeout(async () => {
       console.log(`[TelegramClientManager] Attempting reconnect: ${connectionKey}`);
       this.reconnectTimers.delete(connectionKey);
-      await this.connect(tenantId, channelId, sessionString);
+      if (connection.accountId.startsWith("legacy_")) {
+        await this.connect(connection.tenantId, connection.channelId!, connection.sessionString);
+      } else {
+        await this.connectAccount(connection.tenantId, connection.accountId, connection.channelId, connection.sessionString);
+      }
     }, 30000);
 
     this.reconnectTimers.set(connectionKey, timer);
   }
 
   async disconnect(tenantId: string, channelId: string): Promise<void> {
-    const connectionKey = `${tenantId}:${channelId}`;
-    const connection = this.connections.get(connectionKey);
+    // Disconnect legacy connection
+    const legacyKey = `${tenantId}:legacy_${channelId}`;
+    await this.disconnectByKey(legacyKey);
 
+    // Also disconnect any account connections linked to this channelId
+    for (const [key, conn] of Array.from(this.connections.entries())) {
+      if (conn.tenantId === tenantId && conn.channelId === channelId) {
+        await this.disconnectByKey(key);
+      }
+    }
+  }
+
+  async disconnectAccount(tenantId: string, accountId: string): Promise<void> {
+    const connectionKey = `${tenantId}:${accountId}`;
+    await this.disconnectByKey(connectionKey);
+  }
+
+  private async disconnectByKey(connectionKey: string): Promise<void> {
+    const connection = this.connections.get(connectionKey);
     if (connection) {
       try {
         await connection.client.disconnect();
@@ -360,28 +501,23 @@ class TelegramClientManager {
     text: string,
     options?: { replyToMessageId?: string }
   ): Promise<{ success: boolean; externalMessageId?: string; error?: string }> {
-    const connectionKey = `${tenantId}:${channelId}`;
-    const connection = this.connections.get(connectionKey);
-
+    const connection = this.findConnection(tenantId, channelId);
     if (!connection?.connected) {
       return { success: false, error: "Not connected" };
     }
 
     try {
-      // Convert string ID to BigInt for gramjs
       const peerId = BigInt(externalConversationId);
-      
-      // First try to get the entity to ensure it's in cache
+
       let entity;
       try {
         entity = await connection.client.getEntity(peerId);
         console.log(`[TelegramClientManager] Resolved entity for ${externalConversationId}: ${entity.className}`);
       } catch (entityError: any) {
         console.log(`[TelegramClientManager] Could not resolve entity, trying direct send: ${entityError.message}`);
-        // If we can't get entity, try sending directly with the ID
         entity = peerId;
       }
-      
+
       const result = await connection.client.sendMessage(entity, {
         message: text,
         replyTo: options?.replyToMessageId ? parseInt(options.replyToMessageId, 10) : undefined,
@@ -401,9 +537,7 @@ class TelegramClientManager {
   }
 
   async sendTypingIndicator(tenantId: string, channelId: string, externalConversationId: string): Promise<void> {
-    const connectionKey = `${tenantId}:${channelId}`;
-    const connection = this.connections.get(connectionKey);
-
+    const connection = this.findConnection(tenantId, channelId);
     if (!connection?.connected) return;
 
     try {
@@ -413,39 +547,76 @@ class TelegramClientManager {
           action: new Api.SendMessageTypingAction(),
         })
       );
-    } catch {
+    } catch {}
+  }
+
+  /** Find a connection by tenantId and channelId (supports both legacy and multi-account) */
+  private findConnection(tenantId: string, channelId: string): ActiveConnection | null {
+    // Try legacy key first
+    const legacyKey = `${tenantId}:legacy_${channelId}`;
+    const legacy = this.connections.get(legacyKey);
+    if (legacy?.connected) return legacy;
+
+    // Try to find by channelId in multi-account connections
+    for (const conn of this.connections.values()) {
+      if (conn.tenantId === tenantId && conn.channelId === channelId && conn.connected) {
+        return conn;
+      }
     }
+
+    return null;
   }
 
   getClient(tenantId: string, channelId: string): TelegramClient | null {
-    const connectionKey = `${tenantId}:${channelId}`;
+    const connection = this.findConnection(tenantId, channelId);
+    return connection?.connected ? connection.client : null;
+  }
+
+  getClientForAccount(tenantId: string, accountId: string): TelegramClient | null {
+    const connectionKey = `${tenantId}:${accountId}`;
     const connection = this.connections.get(connectionKey);
     return connection?.connected ? connection.client : null;
   }
 
   isConnected(tenantId: string, channelId: string): boolean {
-    const connectionKey = `${tenantId}:${channelId}`;
+    const connection = this.findConnection(tenantId, channelId);
+    return connection?.connected || false;
+  }
+
+  isAccountConnected(tenantId: string, accountId: string): boolean {
+    const connectionKey = `${tenantId}:${accountId}`;
     const connection = this.connections.get(connectionKey);
     return connection?.connected || false;
   }
 
-  async syncDialogs(tenantId: string, channelId: string, options?: { limit?: number; messageLimit?: number }): Promise<{ 
-    success: boolean; 
-    dialogsImported: number; 
-    messagesImported: number; 
-    error?: string 
+  /** Get all connections for a specific tenant */
+  getConnectionsForTenant(tenantId: string): { accountId: string; channelId: string | null; connected: boolean; lastActivity: Date }[] {
+    return Array.from(this.connections.values())
+      .filter(c => c.tenantId === tenantId)
+      .map(c => ({
+        accountId: c.accountId,
+        channelId: c.channelId,
+        connected: c.connected,
+        lastActivity: c.lastActivity,
+      }));
+  }
+
+  async syncDialogs(tenantId: string, channelId: string, options?: { limit?: number; messageLimit?: number }): Promise<{
+    success: boolean;
+    dialogsImported: number;
+    messagesImported: number;
+    error?: string
   }> {
-    const connectionKey = `${tenantId}:${channelId}`;
-    const connection = this.connections.get(connectionKey);
-    
+    const connection = this.findConnection(tenantId, channelId);
+
     if (!connection?.connected) {
       return { success: false, dialogsImported: 0, messagesImported: 0, error: "Not connected" };
     }
 
     const dialogLimit = options?.limit ?? 50;
     const messageLimit = options?.messageLimit ?? 20;
-    
-    console.log(`[TelegramClientManager] Starting dialog sync for ${connectionKey}, limit=${dialogLimit}, msgLimit=${messageLimit}`);
+
+    console.log(`[TelegramClientManager] Starting dialog sync for ${tenantId}:${channelId}, limit=${dialogLimit}, msgLimit=${messageLimit}`);
 
     try {
       const dialogs = await connection.client.getDialogs({ limit: dialogLimit });
@@ -457,10 +628,8 @@ class TelegramClientManager {
       for (const dialog of dialogs) {
         try {
           if (!dialog.entity || !dialog.id) continue;
-          
+
           const isUser = dialog.isUser;
-          
-          // Skip channels/groups for now - only sync private chats
           if (!isUser) {
             console.log(`[TelegramClientManager] Skipping non-user dialog: ${dialog.title}`);
             continue;
@@ -468,13 +637,12 @@ class TelegramClientManager {
 
           const chatId = dialog.id.toString();
           const entity = dialog.entity as any;
-          
+
           const customerName = [entity.firstName, entity.lastName].filter(Boolean).join(" ") || dialog.title || "Unknown";
           const username = entity.username;
 
-          // Get or create customer by externalId (chatId is the telegram user ID)
           let customer = await storage.getCustomerByExternalId(tenantId, "telegram_personal", chatId);
-          
+
           if (!customer) {
             customer = await storage.createCustomer({
               tenantId,
@@ -486,19 +654,16 @@ class TelegramClientManager {
             console.log(`[TelegramClientManager] Created customer: ${customer.id} - ${customerName}`);
           }
 
-          // Check if conversation already exists for this customer on this channel
           const existingConversations = await storage.getConversationsByTenant(tenantId);
-          let existingConv = existingConversations.find(c => 
+          let existingConv = existingConversations.find(c =>
             c.customerId === customer!.id && c.channelId === channelId
           );
-          
+
           let conversationId: string;
-          
+
           if (existingConv) {
             conversationId = existingConv.id;
-            console.log(`[TelegramClientManager] Conversation exists: ${conversationId} for chat ${chatId}`);
           } else {
-            // Create conversation
             const newConv = await storage.createConversation({
               tenantId,
               customerId: customer.id,
@@ -508,14 +673,10 @@ class TelegramClientManager {
             });
             conversationId = newConv.id;
             dialogsImported++;
-            console.log(`[TelegramClientManager] Created conversation: ${conversationId} for chat ${chatId}`);
           }
 
-          // Fetch message history
           const tgMessages = await connection.client.getMessages(dialog.id, { limit: messageLimit });
-          console.log(`[TelegramClientManager] Fetched ${tgMessages.length} messages for dialog ${dialog.title}`);
 
-          // Get existing messages to avoid duplicates
           const existingMessages = await storage.getMessagesByConversation(conversationId);
           const existingMsgIds = new Set(
             existingMessages
@@ -527,8 +688,6 @@ class TelegramClientManager {
             if (!msg.text?.trim()) continue;
 
             const telegramMsgId = msg.id.toString();
-            
-            // Skip if message already exists
             if (existingMsgIds.has(telegramMsgId)) continue;
 
             const isOutgoing = msg.out || false;
@@ -551,7 +710,6 @@ class TelegramClientManager {
             messagesImported++;
           }
 
-          // Update conversation lastMessageAt
           if (tgMessages.length > 0) {
             const lastMsg = tgMessages[0];
             await storage.updateConversation(conversationId, {
@@ -574,9 +732,8 @@ class TelegramClientManager {
   }
 
   async verifyConnection(tenantId: string, channelId: string): Promise<{ connected: boolean; user?: { id: number; firstName: string; username?: string } }> {
-    const connectionKey = `${tenantId}:${channelId}`;
-    const connection = this.connections.get(connectionKey);
-    
+    const connection = this.findConnection(tenantId, channelId);
+
     if (!connection) {
       return { connected: false };
     }
@@ -585,7 +742,7 @@ class TelegramClientManager {
       const me = await connection.client.getMe() as Api.User;
       connection.connected = true;
       connection.lastActivity = new Date();
-      
+
       return {
         connected: true,
         user: {
@@ -595,26 +752,54 @@ class TelegramClientManager {
         },
       };
     } catch (error: any) {
-      console.log(`[TelegramClientManager] Verify failed for ${connectionKey}: ${error.message}`);
+      console.log(`[TelegramClientManager] Verify failed for ${tenantId}:${channelId}: ${error.message}`);
       connection.connected = false;
-      
-      // Clean up invalid session
-      await this.disconnect(tenantId, channelId);
-      
-      // Mark channel as inactive in database
-      try {
-        await storage.updateChannel(channelId, { isActive: false });
-        console.log(`[TelegramClientManager] Marked channel ${channelId} as inactive`);
-      } catch {}
-      
+
+      const connectionKey = `${tenantId}:${connection.accountId}`;
+      await this.disconnectByKey(connectionKey);
+
+      if (connection.channelId) {
+        try {
+          await storage.updateChannel(connection.channelId, { isActive: false });
+        } catch {}
+      }
+
       return { connected: false };
     }
   }
 
-  getActiveConnections(): { tenantId: string; channelId: string; lastActivity: Date }[] {
+  async verifyAccountConnection(tenantId: string, accountId: string): Promise<{ connected: boolean; user?: { id: number; firstName: string; username?: string } }> {
+    const connectionKey = `${tenantId}:${accountId}`;
+    const connection = this.connections.get(connectionKey);
+
+    if (!connection) {
+      return { connected: false };
+    }
+
+    try {
+      const me = await connection.client.getMe() as Api.User;
+      connection.connected = true;
+      connection.lastActivity = new Date();
+
+      return {
+        connected: true,
+        user: {
+          id: Number(me.id),
+          firstName: me.firstName || "",
+          username: me.username,
+        },
+      };
+    } catch (error: any) {
+      connection.connected = false;
+      return { connected: false };
+    }
+  }
+
+  getActiveConnections(): { tenantId: string; channelId: string | null; accountId: string; lastActivity: Date }[] {
     return Array.from(this.connections.values()).map((c) => ({
       tenantId: c.tenantId,
       channelId: c.channelId,
+      accountId: c.accountId,
       lastActivity: c.lastActivity,
     }));
   }
@@ -624,8 +809,7 @@ class TelegramClientManager {
     channelId: string,
     phoneNumber: string
   ): Promise<{ success: boolean; userId?: string; firstName?: string; lastName?: string; error?: string }> {
-    const connectionKey = `${tenantId}:${channelId}`;
-    const connection = this.connections.get(connectionKey);
+    const connection = this.findConnection(tenantId, channelId);
 
     if (!connection?.connected) {
       return { success: false, error: "Not connected to Telegram" };
@@ -652,7 +836,7 @@ class TelegramClientManager {
         const user = result.users[0] as Api.User;
         const userId = user.id.toString();
         console.log(`[TelegramClientManager] Resolved ${cleanPhone} to user ${userId}: ${user.firstName} ${user.lastName || ""}`);
-        
+
         return {
           success: true,
           userId,
@@ -675,7 +859,7 @@ class TelegramClientManager {
     initialMessage?: string
   ): Promise<{ success: boolean; conversationId?: string; userId?: string; error?: string }> {
     const resolveResult = await this.resolvePhoneNumber(tenantId, channelId, phoneNumber);
-    
+
     if (!resolveResult.success || !resolveResult.userId) {
       return { success: false, error: resolveResult.error || "Could not resolve phone number" };
     }
@@ -716,8 +900,7 @@ class TelegramClientManager {
       try {
         await connection.client.disconnect();
         console.log(`[TelegramClientManager] Disconnected: ${key}`);
-      } catch {
-      }
+      } catch {}
     }
     this.connections.clear();
     this.isInitialized = false;

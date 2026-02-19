@@ -110,4 +110,196 @@
 - **`server/services/max-personal-adapter.ts`** — Node как **клиент** Python: **MAX_SERVICE_URL** = `process.env.MAX_SERVICE_URL || "http://localhost:8100"`; вызовы **fetch(MAX_SERVICE_URL/start-auth|send-message|check-auth|logout|status|...)** для авторизации, отправки сообщений, статуса. Исходящие из Node в MAX идут через этот адаптер; входящие из MAX в Node идут с Python на **/api/max-personal/incoming**.
 
 Итог по п.6: Python-сервис — **`max_personal_service.py`** (корень); Node запускает его из **`server/index.ts`** (startMaxPersonalService), передаёт NODE_BACKEND_URL; Node принимает входящие от Python в **`server/routes.ts`** (POST /api/max-personal/incoming); Node вызывает Python по HTTP в **`server/services/max-personal-adapter.ts`** (MAX_SERVICE_URL, fetch к эндпоинтам FastAPI).
-ё
+
+---
+
+## 7) Поиск запчастей — Podzamenu Lookup (VIN/FRAME → КПП → OEM → Цены)
+
+Полностью реализованная подсистема поиска запчастей по VIN/FRAME коду через парсинг podzamenu.ru и prof-rf (для китайских авто). Включает кэширование результатов, кейсы поиска и автоматический поиск цен по OEM.
+
+### Архитектура и поток данных
+
+```
+API запрос                    BullMQ очередь               Python Playwright
+POST /api/conversations/      vehicle_lookup_queue          podzamenu_lookup_service.py
+  :id/vehicle-lookup-case  →  (Redis, concurrency: 1)   →  POST /lookup
+                                    ↓                            ↓
+                              vehicle-lookup.worker.ts      Браузер → podzamenu.ru / prof-rf
+                                    ↓                            ↓
+                              Кэш + Case + Suggestion       Парсинг КПП, OEM, модель
+                                    ↓
+                              (если confidence ≥ 0.85 и OEM найден)
+                                    ↓
+                              price_lookup_queue → price-lookup.worker.ts → price_snapshots
+```
+
+### 7.1) Python-сервис парсинга: `podzamenu_lookup_service.py`
+
+- **Расположение:** корень репозитория
+- **Фреймворк:** FastAPI, порт 8200 (env `PODZAMENU_LOOKUP_SERVICE_URL`)
+- **Браузер:** Playwright Chromium, semaphore (макс. 2 параллельных lookup'а)
+
+**Endpoint:** `POST /lookup`
+- Вход: `{ idType: "VIN" | "FRAME", value: string }`
+- Выход: `{ vehicleMeta, gearbox, evidence }` — модель КПП, OEM-коды, статус, источник
+- Ошибки: 400 (невалидный ввод), 404 (NOT_FOUND), 500 (ошибка парсинга)
+
+**Стратегия выбора источника** (`SOURCE_STRATEGY` env):
+- `"auto"` (по умолчанию): VIN → сначала podzamenu.ru, при неудаче → prof-rf; FRAME → только podzamenu
+- `"podzamenu"`: только podzamenu.ru
+- `"prof_rf"`: только prof-rf (китайские VIN)
+
+**Логика парсинга podzamenu.ru:**
+1. Переход на страницу поиска с VIN/FRAME
+2. Ожидание результатов
+3. Извлечение модели КПП из HTML (несколько стратегий)
+4. Клик на ссылку «Коробка передач» / «КПП»
+5. Парсинг таблицы OEM (фильтрация по include/exclude паттернам)
+6. Возврат структурированного результата с OEM-кандидатами
+
+**Логика парсинга prof-rf:**
+1. Переход на страницу поиска
+2. Извлечение OEM из заголовков типа «Коробка передач 3043001600»
+3. Парсинг блоков: Оригинал, Аналоги, Копии
+4. Фильтрация и приоритизация OEM-кандидатов
+
+### 7.2) Node HTTP-клиент: `server/services/podzamenu-lookup-client.ts`
+
+- **`lookupByVehicleId(request)`** — HTTP POST к `PODZAMENU_LOOKUP_SERVICE_URL/lookup`
+- Таймаут: 30 секунд
+- Обработка ошибок: NOT_FOUND (404), таймауты, невалидные ответы
+- Возвращает `LookupResponse` с `vehicleMeta`, `gearbox`, `evidence`
+
+### 7.3) Очередь и воркеры
+
+**Очередь vehicle lookup:** `server/services/vehicle-lookup-queue.ts`
+- Queue name: `vehicle_lookup_queue` (BullMQ + Redis)
+- 3 попытки с экспоненциальной задержкой (1 с)
+- Хранение: 100 выполненных, 50 проваленных
+- Job data: `{ caseId, tenantId, conversationId, idType, normalizedValue }`
+
+**Worker vehicle lookup:** `server/workers/vehicle-lookup.worker.ts`
+- Concurrency: 1 (последовательная обработка)
+- Алгоритм:
+  1. Обновляет case status → `RUNNING`
+  2. Вызывает `lookupByVehicleId()` через HTTP-клиент
+  3. Вычисляет confidence (0–1):
+     - База: 0.5
+     - +0.3 если OEM найден
+     - +0.1 если источник podzamenu
+     - +0.1 если есть OEM-кандидаты
+     - −0.2 если OEM status = NOT_AVAILABLE
+     - −0.2 если только модель (без OEM)
+  4. Сохраняет результат в `vehicle_lookup_cache`
+  5. Связывает case с кэшем
+  6. Обновляет case status → `COMPLETED` или `FAILED`
+  7. Создаёт AI suggestion с результатом (используя шаблоны тенанта: gearboxLookupFound, gearboxLookupModelOnly, gearboxTagRequest)
+  8. Broadcast через WebSocket
+  9. **Авто-триггер поиска цен:** если confidence ≥ 0.85 и OEM найден → ставит задачу в `price_lookup_queue`
+- Защита от дублей: не создаёт suggestion если такой уже есть за последние 2 минуты
+
+**Очередь price lookup:** `server/services/price-lookup-queue.ts`
+- Queue name: `price_lookup_queue` (BullMQ + Redis)
+- 3 попытки с экспоненциальной задержкой
+- Удаляет завершённые задачи (`removeOnComplete: true`)
+
+**Worker price lookup:** `server/workers/price-lookup.worker.ts`
+- Concurrency: 1
+- Алгоритм:
+  1. Проверяет кэш (макс. возраст: 60 минут)
+  2. Если в кэше → использует кэшированные цены
+  3. Если нет → mock-цены (1000–1500 ₽, средняя 1200)
+  4. Создаёт `price_snapshot` в БД
+  5. Генерирует suggestion: «Найдены ориентировочные цены по OEM {oem}: {min}–{max} (средняя {avg}). Обновлено: {время}. Источник: {source}.»
+  6. Broadcast через WebSocket
+
+### 7.4) API endpoint
+
+**`POST /api/conversations/:id/vehicle-lookup-case`** — `server/routes.ts`
+- Auth: requireAuth + MANAGE_CONVERSATIONS
+- Body: `{ idType: "VIN" | "FRAME", value: string }`
+- Валидация и нормализация VIN/FRAME
+- Создаёт `vehicle_lookup_case` (status: `PENDING`)
+- Ставит задачу в `vehicle_lookup_queue`
+- Возвращает: `{ caseId: string }`
+
+### 7.5) Схема БД (Drizzle) — `shared/schema.ts`
+
+**Таблица `vehicle_lookup_cache`:**
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID PK | |
+| lookupKey | text, unique | Нормализованный ключ (VIN/FRAME) |
+| idType | text | "VIN" / "FRAME" |
+| rawValue | text | Оригинальный ввод |
+| normalizedValue | text, indexed | Нормализованное значение |
+| result | jsonb | Полный результат с confidence |
+| source | text | "podzamenu" / "prof_rf" |
+| expiresAt | timestamp | Срок годности кэша |
+| createdAt, updatedAt | timestamp | |
+
+**Таблица `vehicle_lookup_cases`:**
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID PK | |
+| tenantId | FK → tenants | |
+| conversationId | FK → conversations | |
+| messageId | FK → messages (опц.) | |
+| idType | text | "VIN" / "FRAME" |
+| rawValue, normalizedValue | text | |
+| status | text | PENDING / RUNNING / COMPLETED / FAILED |
+| verificationStatus | text | NEED_TAG_OPTIONAL / UNVERIFIED_OEM / VERIFIED_MATCH / MISMATCH / NONE |
+| cacheId | FK → cache (опц.) | Ссылка на кэш |
+| error | text (опц.) | Текст ошибки |
+| createdAt, updatedAt | timestamp | |
+| Индексы | | (tenantId, conversationId), status, normalizedValue |
+
+**Таблица `price_snapshots`:**
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID PK | |
+| tenantId | FK → tenants | |
+| oem | text | OEM-код |
+| source | text | "mock" (в будущем: avito, exist) |
+| currency | text | По умолчанию "RUB" |
+| minPrice, maxPrice, avgPrice | integer | Цены в валюте |
+| raw | jsonb | Сырые данные |
+| createdAt | timestamp | |
+| Индексы | | (tenantId, oem, createdAt), (oem, createdAt) |
+
+### 7.6) Storage-методы — `server/database-storage.ts`
+
+**Кэш:**
+- `getVehicleLookupCacheByKey(lookupKey)` — получить запись из кэша
+- `upsertVehicleLookupCache(data)` — вставить/обновить (конфликт по lookupKey)
+- `linkCaseToCache(caseId, cacheId)` — связать кейс с записью кэша
+
+**Кейсы:**
+- `createVehicleLookupCase(data)` — создать кейс
+- `getVehicleLookupCaseById(caseId)` — получить по ID
+- `getLatestVehicleLookupCaseByConversation(tenantId, conversationId)` — последний кейс в диалоге
+- `findActiveVehicleLookupCase(tenantId, conversationId, normalizedValue)` — найти активный кейс за 5 минут
+- `updateVehicleLookupCaseStatus(caseId, patch)` — обновить status, verificationStatus, error, cacheId
+
+**Цены:**
+- `createPriceSnapshot(data)` — создать снимок цен
+- `getLatestPriceSnapshot(tenantId, oem, maxAgeMinutes)` — получить из кэша (если не старше N минут)
+
+### 7.7) Статус реализации
+
+| Компонент | Статус |
+|-----------|--------|
+| Парсинг podzamenu.ru (Playwright) | ✅ Реализован |
+| Парсинг prof-rf (китайские VIN) | ✅ Реализован |
+| Очередь vehicle lookup (BullMQ) | ✅ Реализован |
+| Кэширование результатов | ✅ Реализован |
+| Кейсы поиска по диалогам | ✅ Реализован |
+| AI-suggestions с результатом | ✅ Реализован |
+| Автоматический поиск цен по OEM | ✅ Реализован (mock-данные) |
+| Price snapshots | ✅ Реализован |
+| Реальные источники цен (Avito, Exist) | ❌ Не реализован (mock) |
+| API для чтения кейсов/кэша | ❌ Нет GET endpoints |
+| Очистка просроченного кэша | ❌ Не реализован |
+| Ручное обновление verificationStatus | ❌ Не реализован |
+
+Итог по п.7: Подсистема поиска запчастей работает end-to-end: API → BullMQ → Worker → Python Playwright-сервис → Кэш → AI Suggestions. Python-сервис — **`podzamenu_lookup_service.py`** (порт 8200); Node HTTP-клиент — **`server/services/podzamenu-lookup-client.ts`**; очереди — **`vehicle-lookup-queue.ts`** и **`price-lookup-queue.ts`**; воркеры — **`server/workers/vehicle-lookup.worker.ts`** и **`price-lookup.worker.ts`**; схема — **`shared/schema.ts`** (vehicle_lookup_cache, vehicle_lookup_cases, price_snapshots); storage — **`server/database-storage.ts`**; API — **`server/routes.ts`** (POST /api/conversations/:id/vehicle-lookup-case).

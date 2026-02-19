@@ -36,6 +36,7 @@ import {
   type VehicleLookupCase, type InsertVehicleLookupCase,
   type VehicleLookupCaseStatus, type VehicleLookupVerificationStatus,
   type PriceSnapshot, type InsertPriceSnapshot,
+  type TelegramSession, type InsertTelegramSession,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -249,6 +250,14 @@ export interface IStorage {
   // Price Snapshots
   createPriceSnapshot(data: InsertPriceSnapshot): Promise<PriceSnapshot>;
   getLatestPriceSnapshot(tenantId: string, oem: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined>;
+
+  // Telegram Accounts (multi-account sessions)
+  getTelegramAccountsByTenant(tenantId: string): Promise<TelegramSession[]>;
+  getTelegramAccountById(id: string): Promise<TelegramSession | undefined>;
+  getActiveTelegramAccounts(): Promise<TelegramSession[]>;
+  createTelegramAccount(data: InsertTelegramSession): Promise<TelegramSession>;
+  updateTelegramAccount(id: string, data: Partial<InsertTelegramSession>): Promise<TelegramSession | undefined>;
+  deleteTelegramAccount(id: string): Promise<boolean>;
 }
 
 export class MemStorage implements IStorage {
@@ -1613,6 +1622,58 @@ export class MemStorage implements IStorage {
 
   async getLatestPriceSnapshot(_tenantId: string, _oem: string, _maxAgeMinutes: number): Promise<PriceSnapshot | undefined> {
     return undefined;
+  }
+
+  // Telegram Accounts (stubs for MemStorage)
+  private telegramAccountsMap: Map<string, TelegramSession> = new Map();
+
+  async getTelegramAccountsByTenant(tenantId: string): Promise<TelegramSession[]> {
+    return Array.from(this.telegramAccountsMap.values()).filter(a => a.tenantId === tenantId);
+  }
+
+  async getTelegramAccountById(id: string): Promise<TelegramSession | undefined> {
+    return this.telegramAccountsMap.get(id);
+  }
+
+  async getActiveTelegramAccounts(): Promise<TelegramSession[]> {
+    return Array.from(this.telegramAccountsMap.values()).filter(a => a.status === "active" && a.isEnabled);
+  }
+
+  async createTelegramAccount(data: InsertTelegramSession): Promise<TelegramSession> {
+    const id = randomUUID();
+    const now = new Date();
+    const account: TelegramSession = {
+      ...data,
+      id,
+      phoneNumber: data.phoneNumber ?? null,
+      sessionString: data.sessionString ?? null,
+      phoneCodeHash: data.phoneCodeHash ?? null,
+      status: data.status ?? "pending",
+      lastError: data.lastError ?? null,
+      userId: data.userId ?? null,
+      username: data.username ?? null,
+      firstName: data.firstName ?? null,
+      lastName: data.lastName ?? null,
+      channelId: data.channelId ?? null,
+      authMethod: data.authMethod ?? null,
+      isEnabled: data.isEnabled ?? true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.telegramAccountsMap.set(id, account);
+    return account;
+  }
+
+  async updateTelegramAccount(id: string, data: Partial<InsertTelegramSession>): Promise<TelegramSession | undefined> {
+    const existing = this.telegramAccountsMap.get(id);
+    if (!existing) return undefined;
+    const updated: TelegramSession = { ...existing, ...data, updatedAt: new Date() } as TelegramSession;
+    this.telegramAccountsMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteTelegramAccount(id: string): Promise<boolean> {
+    return this.telegramAccountsMap.delete(id);
   }
 }
 

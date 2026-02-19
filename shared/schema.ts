@@ -451,18 +451,22 @@ export const telegramSessions = pgTable("telegram_sessions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
   channelId: varchar("channel_id").references(() => channels.id),
-  phoneNumber: text("phone_number").notNull(),
-  sessionString: text("session_string"), // encrypted session data
-  phoneCodeHash: text("phone_code_hash"), // temporary, for auth flow
-  status: text("status").notNull().default("pending"), // pending, awaiting_code, awaiting_2fa, active, error
+  phoneNumber: text("phone_number"),
+  sessionString: text("session_string"),
+  phoneCodeHash: text("phone_code_hash"),
+  status: text("status").notNull().default("pending"), // pending, awaiting_code, awaiting_2fa, active, error, disconnected
   lastError: text("last_error"),
-  userId: text("user_id"), // Telegram user ID once authenticated
-  username: text("username"), // Telegram username
+  userId: text("user_id"),
+  username: text("username"),
   firstName: text("first_name"),
   lastName: text("last_name"),
+  authMethod: text("auth_method"), // "qr" | "phone"
+  isEnabled: boolean("is_enabled").default(true).notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (t) => ({
+  tenantIdx: index("telegram_sessions_tenant_idx").on(t.tenantId),
+}));
 
 // ============ PHASE 7: Onboarding State ============
 export const ONBOARDING_STATUS = ["NOT_STARTED", "IN_PROGRESS", "DONE"] as const;

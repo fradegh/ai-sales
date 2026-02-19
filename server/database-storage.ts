@@ -7,6 +7,7 @@ import {
   updateHistory,
   vehicleLookupCache, vehicleLookupCases,
   priceSnapshots,
+  telegramSessions,
 } from "@shared/schema";
 import {
   type Tenant, type InsertTenant,
@@ -45,6 +46,7 @@ import {
   type VehicleLookupCache, type InsertVehicleLookupCache,
   type VehicleLookupCase, type InsertVehicleLookupCase,
   type PriceSnapshot, type InsertPriceSnapshot,
+  type TelegramSession, type InsertTelegramSession,
 } from "@shared/schema";
 import type { IStorage } from "./storage";
 
@@ -1297,5 +1299,44 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(priceSnapshots.createdAt))
       .limit(1);
     return row;
+  }
+
+  // Telegram Accounts (multi-account sessions)
+
+  async getTelegramAccountsByTenant(tenantId: string): Promise<TelegramSession[]> {
+    return db.select().from(telegramSessions)
+      .where(eq(telegramSessions.tenantId, tenantId))
+      .orderBy(desc(telegramSessions.createdAt));
+  }
+
+  async getTelegramAccountById(id: string): Promise<TelegramSession | undefined> {
+    const [row] = await db.select().from(telegramSessions).where(eq(telegramSessions.id, id));
+    return row;
+  }
+
+  async getActiveTelegramAccounts(): Promise<TelegramSession[]> {
+    return db.select().from(telegramSessions)
+      .where(and(
+        eq(telegramSessions.status, "active"),
+        eq(telegramSessions.isEnabled, true),
+      ));
+  }
+
+  async createTelegramAccount(data: InsertTelegramSession): Promise<TelegramSession> {
+    const [row] = await db.insert(telegramSessions).values(data).returning();
+    return row;
+  }
+
+  async updateTelegramAccount(id: string, data: Partial<InsertTelegramSession>): Promise<TelegramSession | undefined> {
+    const [row] = await db.update(telegramSessions)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(telegramSessions.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteTelegramAccount(id: string): Promise<boolean> {
+    const result = await db.delete(telegramSessions).where(eq(telegramSessions.id, id));
+    return (result.rowCount ?? 0) > 0;
   }
 }
