@@ -9,4 +9,8 @@ COPY . .
 RUN npm run build
 
 EXPOSE 5000
-CMD ["npm", "run", "start"]
+
+COPY start.sh ./
+RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
+
+CMD ["./start.sh"]
