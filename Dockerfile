@@ -10,7 +10,4 @@ RUN npm run build
 
 EXPOSE 5000
 
-COPY start.sh ./
-RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
-
-CMD ["./start.sh"]
+CMD ["sh", "-c", "echo 'Running migrations...' && npx drizzle-kit push --force && echo 'Migrations done. Starting app...' && npm run start"]
