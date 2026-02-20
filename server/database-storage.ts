@@ -50,6 +50,7 @@ import {
   type TelegramSession, type InsertTelegramSession,
 } from "@shared/schema";
 import type { IStorage } from "./storage";
+import { encryptSessionString, decryptSessionString } from "./services/telegram-session-crypto";
 
 export class DatabaseStorage implements IStorage {
   private defaultTenantId: string | null = null;
@@ -400,40 +401,69 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getConversationsByTenant(tenantId: string): Promise<ConversationWithCustomer[]> {
-    const convs = await db.select().from(conversations)
+    const rows = await db
+      .select({ conv: conversations, customer: customers })
+      .from(conversations)
+      .innerJoin(customers, eq(conversations.customerId, customers.id))
       .where(eq(conversations.tenantId, tenantId))
       .orderBy(desc(conversations.lastMessageAt));
 
-    const result: ConversationWithCustomer[] = [];
-    for (const conv of convs) {
-      const customer = await this.getCustomer(conv.customerId);
-      if (!customer) continue;
+    if (rows.length === 0) return [];
 
-      const msgs = await this.getMessagesByConversation(conv.id);
-      const lastMessage = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
-      result.push({ ...conv, customer, lastMessage });
+    const convIds = rows.map(r => r.conv.id);
+    const allMessages = await db
+      .select()
+      .from(messages)
+      .where(inArray(messages.conversationId, convIds))
+      .orderBy(desc(messages.createdAt));
+
+    // Keep the first occurrence per conversationId (newest, since ordered DESC)
+    const lastMsgMap = new Map<string, Message>();
+    for (const msg of allMessages) {
+      if (!lastMsgMap.has(msg.conversationId)) {
+        lastMsgMap.set(msg.conversationId, msg);
+      }
     }
-    return result;
+
+    return rows.map(({ conv, customer }) => ({
+      ...conv,
+      customer,
+      lastMessage: lastMsgMap.get(conv.id),
+    }));
   }
 
   async getActiveConversations(tenantId: string): Promise<ConversationWithCustomer[]> {
-    const convs = await db.select().from(conversations)
+    const rows = await db
+      .select({ conv: conversations, customer: customers })
+      .from(conversations)
+      .innerJoin(customers, eq(conversations.customerId, customers.id))
       .where(and(
         eq(conversations.tenantId, tenantId),
         eq(conversations.status, "active")
       ))
       .orderBy(desc(conversations.lastMessageAt));
 
-    const result: ConversationWithCustomer[] = [];
-    for (const conv of convs) {
-      const customer = await this.getCustomer(conv.customerId);
-      if (!customer) continue;
+    if (rows.length === 0) return [];
 
-      const msgs = await this.getMessagesByConversation(conv.id);
-      const lastMessage = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
-      result.push({ ...conv, customer, lastMessage });
+    const convIds = rows.map(r => r.conv.id);
+    const allMessages = await db
+      .select()
+      .from(messages)
+      .where(inArray(messages.conversationId, convIds))
+      .orderBy(desc(messages.createdAt));
+
+    const lastMsgMap = new Map<string, Message>();
+    for (const msg of allMessages) {
+      if (!lastMsgMap.has(msg.conversationId)) {
+        lastMsgMap.set(msg.conversationId, msg);
+      }
     }
-    return result;
+
+    return rows.map(({ conv, customer }) => ({
+      ...conv,
+      customer,
+      lastMessage: lastMsgMap.get(conv.id),
+    }));
   }
 
   async createConversation(data: InsertConversation & { lastMessageAt?: Date; createdAt?: Date }): Promise<Conversation> {
@@ -473,6 +503,12 @@ export class DatabaseStorage implements IStorage {
       .set({ lastMessageAt: messageTime })
       .where(eq(conversations.id, data.conversationId));
     
+    return msg;
+  }
+
+  async updateMessage(id: string, data: Partial<InsertMessage>): Promise<Message | undefined> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [msg] = await db.update(messages).set(data as any).where(eq(messages.id, id)).returning();
     return msg;
   }
 
@@ -734,13 +770,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getEscalationsByTenant(tenantId: string): Promise<EscalationEvent[]> {
-    const convs = await db.select().from(conversations).where(eq(conversations.tenantId, tenantId));
-    const convIds = convs.map(c => c.id);
-    if (convIds.length === 0) return [];
-    
-    return db.select().from(escalationEvents).where(
-      inArray(escalationEvents.conversationId, convIds)
-    ).orderBy(desc(escalationEvents.createdAt));
+    return db
+      .select()
+      .from(escalationEvents)
+      .where(
+        inArray(
+          escalationEvents.conversationId,
+          db.select({ id: conversations.id })
+            .from(conversations)
+            .where(eq(conversations.tenantId, tenantId))
+        )
+      )
+      .orderBy(desc(escalationEvents.createdAt));
   }
 
   async getRecentEscalations(tenantId: string, limit: number): Promise<EscalationEvent[]> {
@@ -768,32 +809,47 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getDashboardMetrics(tenantId: string): Promise<DashboardMetrics> {
-    const convs = await db.select().from(conversations).where(eq(conversations.tenantId, tenantId));
-    const prods = await db.select().from(products).where(eq(products.tenantId, tenantId));
-    const docs = await db.select().from(knowledgeDocs).where(eq(knowledgeDocs.tenantId, tenantId));
+    const [convCounts, pendingResult, productsResult, docsResult] = await Promise.all([
+      db
+        .select({
+          total: sql<number>`count(*)::int`,
+          active: sql<number>`count(*) filter (where ${conversations.status} = 'active')::int`,
+          escalated: sql<number>`count(*) filter (where ${conversations.status} = 'escalated')::int`,
+        })
+        .from(conversations)
+        .where(eq(conversations.tenantId, tenantId)),
 
-    const convIds = convs.map(c => c.id);
-    let pendingSuggestions = 0;
-    if (convIds.length > 0) {
-      const suggestions = await db.select().from(aiSuggestions).where(
-        and(
-          inArray(aiSuggestions.conversationId, convIds),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(aiSuggestions)
+        .innerJoin(conversations, eq(aiSuggestions.conversationId, conversations.id))
+        .where(and(
+          eq(conversations.tenantId, tenantId),
           eq(aiSuggestions.status, "pending")
-        )
-      );
-      pendingSuggestions = suggestions.length;
-    }
+        )),
 
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(products)
+        .where(eq(products.tenantId, tenantId)),
+
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(knowledgeDocs)
+        .where(eq(knowledgeDocs.tenantId, tenantId)),
+    ]);
+
+    const conv = convCounts[0];
     return {
-      totalConversations: convs.length,
-      activeConversations: convs.filter(c => c.status === "active").length,
-      escalatedConversations: convs.filter(c => c.status === "escalated").length,
+      totalConversations: conv?.total ?? 0,
+      activeConversations: conv?.active ?? 0,
+      escalatedConversations: conv?.escalated ?? 0,
       resolvedToday: 0,
       avgResponseTime: 12,
       aiAccuracy: 0,
-      pendingSuggestions,
-      productsCount: prods.length,
-      knowledgeDocsCount: docs.length,
+      pendingSuggestions: pendingResult[0]?.count ?? 0,
+      productsCount: productsResult[0]?.count ?? 0,
+      knowledgeDocsCount: docsResult[0]?.count ?? 0,
     };
   }
 
@@ -1344,36 +1400,53 @@ export class DatabaseStorage implements IStorage {
 
   // Telegram Accounts (multi-account sessions)
 
+  private decryptTelegramSessionRow<T extends { sessionString: string | null }>(row: T): T {
+    const plain = decryptSessionString(row.sessionString ?? null);
+    return { ...row, sessionString: plain };
+  }
+
   async getTelegramAccountsByTenant(tenantId: string): Promise<TelegramSession[]> {
-    return db.select().from(telegramSessions)
+    const rows = await db.select().from(telegramSessions)
       .where(eq(telegramSessions.tenantId, tenantId))
       .orderBy(desc(telegramSessions.createdAt));
+    return rows.map((row) => this.decryptTelegramSessionRow(row));
   }
 
   async getTelegramAccountById(id: string): Promise<TelegramSession | undefined> {
     const [row] = await db.select().from(telegramSessions).where(eq(telegramSessions.id, id));
-    return row;
+    return row ? this.decryptTelegramSessionRow(row) : undefined;
   }
 
   async getActiveTelegramAccounts(): Promise<TelegramSession[]> {
-    return db.select().from(telegramSessions)
+    const rows = await db.select().from(telegramSessions)
       .where(and(
         eq(telegramSessions.status, "active"),
         eq(telegramSessions.isEnabled, true),
       ));
+    return rows.map((row) => this.decryptTelegramSessionRow(row));
   }
 
   async createTelegramAccount(data: InsertTelegramSession): Promise<TelegramSession> {
-    const [row] = await db.insert(telegramSessions).values(data).returning();
-    return row;
+    const payload = { ...data };
+    if (payload.sessionString != null && payload.sessionString !== "") {
+      payload.sessionString = encryptSessionString(payload.sessionString);
+    }
+    const [row] = await db.insert(telegramSessions).values(payload).returning();
+    return row ? this.decryptTelegramSessionRow(row) : (row as TelegramSession);
   }
 
   async updateTelegramAccount(id: string, data: Partial<InsertTelegramSession>): Promise<TelegramSession | undefined> {
+    const payload = { ...data };
+    if (payload.sessionString !== undefined) {
+      payload.sessionString = payload.sessionString == null || payload.sessionString === ""
+        ? payload.sessionString
+        : encryptSessionString(payload.sessionString);
+    }
     const [row] = await db.update(telegramSessions)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...payload, updatedAt: new Date() })
       .where(eq(telegramSessions.id, id))
       .returning();
-    return row;
+    return row ? this.decryptTelegramSessionRow(row) : undefined;
   }
 
   async deleteTelegramAccount(id: string): Promise<boolean> {
