@@ -1214,8 +1214,10 @@ router.post(
 
     session.originalUserId = adminUser.id;
     session.originalRole = adminUser.role;
+    session.originalTenantId = adminUser.tenantId ?? null;
     session.userId = user.id;
     session.role = user.role;
+    session.tenantId = user.tenantId;
     session.isImpersonating = true;
     session.impersonatedAt = new Date().toISOString();
 
@@ -1259,8 +1261,10 @@ router.post(
 
     session.userId = session.originalUserId;
     session.role = session.originalRole;
+    session.tenantId = session.originalTenantId ?? null;
     delete session.originalUserId;
     delete session.originalRole;
+    delete session.originalTenantId;
     delete session.isImpersonating;
     delete session.impersonatedAt;
 

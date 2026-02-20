@@ -10,4 +10,4 @@ RUN npm run build
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "echo 'Running migrations...' && npx drizzle-kit push --force && echo 'Migrations done. Starting app...' && npm run start"]
+CMD ["sh", "-c", "echo 'Running migrations...' && npx drizzle-kit migrate && echo 'Migrations done. Starting app...' && npm run start"]

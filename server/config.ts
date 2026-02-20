@@ -1,39 +1,54 @@
 import { z } from "zod";
 
 // Environment configuration schema
-const envSchema = z.object({
-  // Required
-  NODE_ENV: z.enum(["development", "staging", "production", "test"]).default("development"),
-  PORT: z.coerce.number().default(5000),
-  
-  // OpenAI
-  AI_INTEGRATIONS_OPENAI_API_KEY: z.string().optional(),
-  AI_INTEGRATIONS_OPENAI_BASE_URL: z.string().optional(),
-  
-  // Session
-  SESSION_SECRET: z.string().min(32).optional(),
-  
-  // Database (optional for MVP)
-  DATABASE_URL: z.string().optional(),
-  
-  // Rate limiting
-  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
-  RATE_LIMIT_AI_MAX_REQUESTS: z.coerce.number().default(20),
-  
-  // Logging
-  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-  
-  // Telegram
-  TELEGRAM_BOT_TOKEN: z.string().optional(),
-  TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
-  
-  // WhatsApp
-  WHATSAPP_API_TOKEN: z.string().optional(),
-  WHATSAPP_PHONE_ID: z.string().optional(),
-  
-  // Sentry
-  SENTRY_DSN: z.string().optional(),
-});
+const envSchema = z
+  .object({
+    // Required
+    NODE_ENV: z.enum(["development", "staging", "production", "test"]).default("development"),
+    PORT: z.coerce.number().default(5000),
+
+    // OpenAI
+    AI_INTEGRATIONS_OPENAI_API_KEY: z.string().optional(),
+    AI_INTEGRATIONS_OPENAI_BASE_URL: z.string().optional(),
+
+    // Session — required in production/staging; optional in development/test
+    SESSION_SECRET: z.string().min(32).optional(),
+
+    // Database (optional for MVP)
+    DATABASE_URL: z.string().optional(),
+
+    // Rate limiting
+    RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
+    RATE_LIMIT_AI_MAX_REQUESTS: z.coerce.number().default(20),
+
+    // Logging
+    LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+
+    // Telegram
+    TELEGRAM_BOT_TOKEN: z.string().optional(),
+    TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
+
+    // WhatsApp
+    WHATSAPP_API_TOKEN: z.string().optional(),
+    WHATSAPP_PHONE_ID: z.string().optional(),
+
+    // Sentry
+    SENTRY_DSN: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      (data.NODE_ENV === "production" || data.NODE_ENV === "staging") &&
+      !data.SESSION_SECRET
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "SESSION_SECRET is required in production/staging (minimum 32 characters). " +
+          "Set the SESSION_SECRET environment variable before starting the server.",
+        path: ["SESSION_SECRET"],
+      });
+    }
+  });
 
 export type EnvConfig = z.infer<typeof envSchema>;
 
@@ -80,8 +95,10 @@ export function checkRequiredServices(): { valid: boolean; warnings: string[] } 
     warnings.push("OpenAI API key not configured - AI features will not work");
   }
   
-  if (!cfg.SESSION_SECRET && cfg.NODE_ENV !== "development") {
-    warnings.push("SESSION_SECRET not set - using insecure default");
+  // SESSION_SECRET absence in production/staging is caught by envSchema.superRefine at startup
+  // and will abort the process before reaching here, so no warning needed here.
+  if (!cfg.SESSION_SECRET && cfg.NODE_ENV === "development") {
+    warnings.push("SESSION_SECRET not set — sessions use an insecure dev fallback");
   }
   
   return {

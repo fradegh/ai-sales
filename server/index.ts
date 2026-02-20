@@ -1,4 +1,4 @@
-import express, { type Request, Response, NextFunction } from "express";
+import express from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -10,6 +10,7 @@ import { WhatsAppPersonalAdapter } from "./services/whatsapp-personal-adapter";
 import { realtimeService } from "./services/websocket-server";
 import { storage } from "./storage";
 import { telegramClientManager } from "./services/telegram-client-manager";
+import { errorHandler } from "./middleware/error-handler";
 import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
@@ -94,13 +95,7 @@ app.use((req, res, next) => {
 (async () => {
   await registerRoutes(httpServer, app);
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    res.status(status).json({ message });
-    throw err;
-  });
+  app.use(errorHandler);
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route

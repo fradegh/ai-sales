@@ -9,25 +9,13 @@ class WebSocketClient {
   private reconnectDelay = 2000;
   private handlers: Map<string, Set<MessageHandler>> = new Map();
   private isConnecting = false;
-  private tenantId: string | null = null;
 
-  async connect() {
+  connect() {
     if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) {
       return;
     }
 
     this.isConnecting = true;
-
-    try {
-      const response = await fetch("/api/tenant");
-      if (response.ok) {
-        const tenant = await response.json();
-        this.tenantId = tenant.id;
-      }
-    } catch {
-      console.log("[WebSocket] Failed to fetch tenant, using default");
-      this.tenantId = "default";
-    }
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -39,10 +27,6 @@ class WebSocketClient {
         console.log("[WebSocket] Connected");
         this.isConnecting = false;
         this.reconnectAttempts = 0;
-        if (this.tenantId) {
-          this.ws?.send(JSON.stringify({ type: "set_tenant", tenantId: this.tenantId }));
-          console.log(`[WebSocket] Set tenant: ${this.tenantId}`);
-        }
       };
 
       this.ws.onmessage = (event) => {

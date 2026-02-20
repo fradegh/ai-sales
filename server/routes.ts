@@ -21,6 +21,7 @@ import { getSession } from "./session";
 import { channelRegistry } from "./services/channel-adapter";
 import { WhatsAppPersonalAdapter } from "./services/whatsapp-personal-adapter";
 import { requireAuth, requireOperator, requireAdmin, requirePermission } from "./middleware/rbac";
+import { validateBody, patchTenantSchema } from "./middleware/validation";
 import { requireActiveSubscription } from "./middleware/subscription";
 import { requireActiveTenant } from "./middleware/fraud-protection";
 import { fraudDetectionService } from "./services/fraud-detection-service";
@@ -68,7 +69,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/tenant", requireAuth, requirePermission("MANAGE_TENANT_SETTINGS"), async (req: Request, res: Response) => {
+  app.patch("/api/tenant", requireAuth, requirePermission("MANAGE_TENANT_SETTINGS"), validateBody(patchTenantSchema), async (req: Request, res: Response) => {
     try {
       const user = await storage.getUser(req.userId);
       if (!user?.tenantId) {
@@ -85,39 +86,28 @@ export async function registerRoutes(
   app.post("/api/onboarding/setup", requireAuth, requirePermission("MANAGE_TENANT_SETTINGS"), async (req: Request, res: Response) => {
     try {
       const data = req.body;
-      let tenant = await storage.getDefaultTenant();
-      
-      if (tenant) {
-        tenant = await storage.updateTenant(tenant.id, {
-          name: data.name,
-          language: data.language,
-          tone: data.tone,
-          addressStyle: data.addressStyle,
-          currency: data.currency,
-          timezone: data.timezone,
-          workingHoursStart: data.workingHoursStart,
-          workingHoursEnd: data.workingHoursEnd,
-          autoReplyOutsideHours: data.autoReplyOutsideHours,
-          escalationEmail: data.escalationEmail || null,
-          allowDiscounts: data.allowDiscounts,
-          maxDiscountPercent: data.maxDiscountPercent,
-        });
-      } else {
-        tenant = await storage.createTenant({
-          name: data.name,
-          language: data.language,
-          tone: data.tone,
-          addressStyle: data.addressStyle,
-          currency: data.currency,
-          timezone: data.timezone,
-          workingHoursStart: data.workingHoursStart,
-          workingHoursEnd: data.workingHoursEnd,
-          autoReplyOutsideHours: data.autoReplyOutsideHours,
-          escalationEmail: data.escalationEmail || null,
-          allowDiscounts: data.allowDiscounts,
-          maxDiscountPercent: data.maxDiscountPercent,
-        });
+      const onboardingUser = await storage.getUser(req.userId);
+      if (!onboardingUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
+      let tenant = await storage.getTenant(onboardingUser.tenantId);
+      if (!tenant) {
+        return res.status(404).json({ error: "Tenant not found" });
+      }
+      tenant = await storage.updateTenant(tenant.id, {
+        name: data.name,
+        language: data.language,
+        tone: data.tone,
+        addressStyle: data.addressStyle,
+        currency: data.currency,
+        timezone: data.timezone,
+        workingHoursStart: data.workingHoursStart,
+        workingHoursEnd: data.workingHoursEnd,
+        autoReplyOutsideHours: data.autoReplyOutsideHours,
+        escalationEmail: data.escalationEmail || null,
+        allowDiscounts: data.allowDiscounts,
+        maxDiscountPercent: data.maxDiscountPercent,
+      });
 
       // Create initial knowledge docs from onboarding data
       if (data.deliveryOptions) {
@@ -149,16 +139,16 @@ export async function registerRoutes(
   // GET /api/customers - List customers with optional search
   app.get("/api/customers", requireAuth, requirePermission("VIEW_CUSTOMERS"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const customersUser = await storage.getUser(req.userId);
+      if (!customersUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
       const search = req.query.search as string | undefined;
       let customers;
       if (search && search.trim().length > 0) {
-        customers = await storage.searchCustomers(tenant.id, search.trim());
+        customers = await storage.searchCustomers(customersUser.tenantId, search.trim());
       } else {
-        customers = await storage.getCustomersByTenant(tenant.id);
+        customers = await storage.getCustomersByTenant(customersUser.tenantId);
       }
       res.json(customers);
     } catch (error) {
@@ -170,8 +160,12 @@ export async function registerRoutes(
   // GET /api/customers/:id - Get single customer
   app.get("/api/customers/:id", requireAuth, requirePermission("VIEW_CUSTOMERS"), async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       res.json(customer);
@@ -185,8 +179,12 @@ export async function registerRoutes(
   // RBAC: owner, admin, operator
   app.patch("/api/customers/:id", requireAuth, requireOperator, async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       
@@ -206,8 +204,12 @@ export async function registerRoutes(
   // GET /api/customers/:id/notes - Get customer notes
   app.get("/api/customers/:id/notes", requireAuth, requirePermission("VIEW_CUSTOMERS"), async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       const notes = await storage.getCustomerNotes(req.params.id);
@@ -222,8 +224,12 @@ export async function registerRoutes(
   // RBAC: operator+
   app.post("/api/customers/:id/notes", requireAuth, requireOperator, async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
 
@@ -240,14 +246,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid data", details: parsed.error.flatten() });
       }
 
-      // Validate user exists (required for author attribution)
+      // Validate user exists (required for author attribution) — user already fetched above
       if (!req.userId || req.userId === "system") {
         return res.status(403).json({ error: "User authentication required to create notes" });
-      }
-      
-      const user = await storage.getUser(req.userId);
-      if (!user) {
-        return res.status(403).json({ error: "User not found in system" });
       }
 
       // Sanitize PII in note text before saving
@@ -282,27 +283,25 @@ export async function registerRoutes(
   // RBAC: author or admin
   app.delete("/api/customers/:id/notes/:noteId", requireAuth, requireOperator, async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       
       const note = await storage.getCustomerNote(req.params.noteId);
-      if (!note) {
+      if (!note || note.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Note not found" });
       }
       
       // Check permission: author or admin
       const isAdmin = req.userRole === "admin" || req.userRole === "owner";
       
-      // Resolve current user to check authorship
-      let isAuthor = false;
-      if (req.userId && note.authorUserId) {
-        const currentUser = await storage.getUser(req.userId);
-        if (currentUser) {
-          isAuthor = note.authorUserId === currentUser.id;
-        }
-      }
+      // Check authorship using the user already fetched above
+      const isAuthor = !!(note.authorUserId && user.id === note.authorUserId);
       
       if (!isAuthor && !isAdmin) {
         return res.status(403).json({ error: "Only note author or admin can delete this note" });
@@ -374,8 +373,12 @@ export async function registerRoutes(
   // GET /api/customers/:id/memory - Get customer memory (preferences + frequent topics)
   app.get("/api/customers/:id/memory", requireAuth, requirePermission("VIEW_CUSTOMERS"), async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       
@@ -402,8 +405,12 @@ export async function registerRoutes(
   // RBAC: operator+
   app.patch("/api/customers/:id/memory", requireAuth, requireOperator, async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       
@@ -449,8 +456,12 @@ export async function registerRoutes(
   // RBAC: admin only
   app.post("/api/customers/:id/memory/rebuild-summary", requireAuth, requireAdmin, async (req: Request, res: Response) => {
     try {
+      const user = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const customer = await storage.getCustomer(req.params.id);
-      if (!customer) {
+      if (!customer || customer.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Customer not found" });
       }
       
@@ -569,8 +580,15 @@ export async function registerRoutes(
   // RBAC: operator+
   app.patch("/api/conversations/:id", requireAuth, requireOperator, async (req: Request, res: Response) => {
     try {
+      if (!req.userId || req.userId === "system") {
+        return res.status(403).json({ error: "User authentication required" });
+      }
+      const user = await getUserForConversations(req.userId);
+      if (!user?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const conversation = await storage.getConversation(req.params.id);
-      if (!conversation) {
+      if (!conversation || conversation.tenantId !== user.tenantId) {
         return res.status(404).json({ error: "Conversation not found" });
       }
 
@@ -626,9 +644,17 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Message content is required" });
       }
       
+      if (!req.userId || req.userId === "system") {
+        return res.status(403).json({ error: "User authentication required" });
+      }
+      const msgUser = await getUserForConversations(req.userId);
+      if (!msgUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+
       // Get conversation details to determine channel and recipient
       const conversation = await storage.getConversationDetail(req.params.id);
-      if (!conversation) {
+      if (!conversation || conversation.tenantId !== msgUser.tenantId) {
         return res.status(404).json({ error: "Conversation not found" });
       }
       
@@ -723,12 +749,19 @@ export async function registerRoutes(
   // Phase 1: Now uses Decision Engine for confidence pipeline and decision making
   app.post("/api/conversations/:id/generate-suggestion", requireAuth, requirePermission("VIEW_CONVERSATIONS"), aiRateLimiter, tenantAiLimiter, async (req: Request, res: Response) => {
     try {
+      if (!req.userId || req.userId === "system") {
+        return res.status(403).json({ error: "User authentication required" });
+      }
+      const genUser = await getUserForConversations(req.userId);
+      if (!genUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const conversation = await storage.getConversationDetail(req.params.id);
-      if (!conversation) {
+      if (!conversation || conversation.tenantId !== genUser.tenantId) {
         return res.status(404).json({ error: "Conversation not found" });
       }
 
-      const tenant = await storage.getDefaultTenant();
+      const tenant = await storage.getTenant(genUser.tenantId);
       if (!tenant) {
         return res.status(404).json({ error: "Tenant not found" });
       }
@@ -810,8 +843,17 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Suggestion not found" });
       }
 
+      const approveUser = await getUserForConversations(req.userId ?? "");
+      if (!approveUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const suggestionConv = await storage.getConversation(suggestion.conversationId);
+      if (!suggestionConv || suggestionConv.tenantId !== approveUser.tenantId) {
+        return res.status(404).json({ error: "Suggestion not found" });
+      }
+
       // Get tenant for working hours info
-      const tenant = await storage.getDefaultTenant();
+      const tenant = await storage.getTenant(approveUser.tenantId);
       if (!tenant) {
         return res.status(404).json({ error: "Tenant not found" });
       }
@@ -1001,8 +1043,17 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Suggestion not found" });
       }
 
+      const editUser = await getUserForConversations(req.userId ?? "");
+      if (!editUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const editSuggestionConv = await storage.getConversation(suggestion.conversationId);
+      if (!editSuggestionConv || editSuggestionConv.tenantId !== editUser.tenantId) {
+        return res.status(404).json({ error: "Suggestion not found" });
+      }
+
       // Get tenant for working hours info
-      const tenant = await storage.getDefaultTenant();
+      const tenant = await storage.getTenant(editUser.tenantId);
       if (!tenant) {
         return res.status(404).json({ error: "Tenant not found" });
       }
@@ -1188,6 +1239,15 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Suggestion not found" });
       }
 
+      const rejectUser = await getUserForConversations(req.userId ?? "");
+      if (!rejectUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const rejectSuggestionConv = await storage.getConversation(suggestion.conversationId);
+      if (!rejectSuggestionConv || rejectSuggestionConv.tenantId !== rejectUser.tenantId) {
+        return res.status(404).json({ error: "Suggestion not found" });
+      }
+
       await storage.updateAiSuggestion(req.params.id, { status: "rejected" });
       await storage.createHumanAction({
         suggestionId: suggestion.id,
@@ -1197,30 +1257,27 @@ export async function registerRoutes(
       });
 
       // Record training sample for ML dataset
-      const tenant = await storage.getDefaultTenant();
-      if (tenant) {
-        const rejectMessages = await storage.getMessagesByConversation(suggestion.conversationId);
-        const lastCustomerMsgReject = [...rejectMessages].reverse().find(m => m.role === "customer");
-        if (lastCustomerMsgReject) {
-          await recordTrainingSample({
-            suggestion,
-            userMessage: lastCustomerMsgReject.content,
-            finalAnswer: null, // explicitly null for REJECTED
-            outcome: "REJECTED",
-            tenantId: tenant.id,
-            rejectionReason: req.body.reason || null,
-          });
-        }
-        
-        // Add to learning queue if score > 0
-        await addToLearningQueue({
+      const rejectMessages = await storage.getMessagesByConversation(suggestion.conversationId);
+      const lastCustomerMsgReject = [...rejectMessages].reverse().find(m => m.role === "customer");
+      if (lastCustomerMsgReject) {
+        await recordTrainingSample({
           suggestion,
+          userMessage: lastCustomerMsgReject.content,
+          finalAnswer: null, // explicitly null for REJECTED
           outcome: "REJECTED",
-          messageCount: rejectMessages.length,
-          tenantId: tenant.id,
-          conversationId: suggestion.conversationId,
+          tenantId: rejectUser.tenantId,
+          rejectionReason: req.body.reason || null,
         });
       }
+
+      // Add to learning queue if score > 0
+      await addToLearningQueue({
+        suggestion,
+        outcome: "REJECTED",
+        messageCount: rejectMessages.length,
+        tenantId: rejectUser.tenantId,
+        conversationId: suggestion.conversationId,
+      });
 
       // Phase 2.1: Cancel any scheduled messages for this suggestion
       const messages = await storage.getMessagesBySuggestionId?.(suggestion.id);
@@ -1244,6 +1301,15 @@ export async function registerRoutes(
     try {
       const suggestion = await storage.getAiSuggestion(req.params.id);
       if (!suggestion) {
+        return res.status(404).json({ error: "Suggestion not found" });
+      }
+
+      const escalateUser = await getUserForConversations(req.userId ?? "");
+      if (!escalateUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const escalateSuggestionConv = await storage.getConversation(suggestion.conversationId);
+      if (!escalateSuggestionConv || escalateSuggestionConv.tenantId !== escalateUser.tenantId) {
         return res.status(404).json({ error: "Suggestion not found" });
       }
 
@@ -1297,16 +1363,17 @@ export async function registerRoutes(
 
   app.get("/api/settings/decision", requireAuth, requirePermission("VIEW_CONVERSATIONS"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const decisionSettingsUser = await storage.getUser(req.userId);
+      if (!decisionSettingsUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
-      
-      const settings = await storage.getDecisionSettings(tenant.id);
+      const tenantId = decisionSettingsUser.tenantId;
+
+      const settings = await storage.getDecisionSettings(tenantId);
       
       // Return defaults if no settings exist
       const { DEFAULT_SETTINGS } = await import("./services/decision-engine");
-      res.json(settings || { ...DEFAULT_SETTINGS, tenantId: tenant.id });
+      res.json(settings || { ...DEFAULT_SETTINGS, tenantId });
     } catch (error) {
       console.error("Error fetching decision settings:", error);
       res.status(500).json({ error: "Failed to fetch decision settings" });
@@ -1315,10 +1382,11 @@ export async function registerRoutes(
 
   app.patch("/api/settings/decision", requireAuth, requirePermission("MANAGE_AUTOSEND"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const decisionPatchUser = await storage.getUser(req.userId);
+      if (!decisionPatchUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
+      const tenant = { id: decisionPatchUser.tenantId };
 
       const { tAuto, tEscalate, autosendAllowed, intentsAutosendAllowed, intentsForceHandoff } = req.body;
 
@@ -1385,14 +1453,15 @@ export async function registerRoutes(
 
   app.get("/api/settings/human-delay", requireAuth, requirePermission("VIEW_CONVERSATIONS"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const humanDelayUser = await storage.getUser(req.userId);
+      if (!humanDelayUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
-      
-      const settings = await storage.getHumanDelaySettings(tenant.id);
+      const tenantId = humanDelayUser.tenantId;
+
+      const settings = await storage.getHumanDelaySettings(tenantId);
       const { getDefaultHumanDelaySettings } = await import("./services/human-delay-engine");
-      res.json(settings || getDefaultHumanDelaySettings(tenant.id));
+      res.json(settings || getDefaultHumanDelaySettings(tenantId));
     } catch (error) {
       console.error("Error fetching human delay settings:", error);
       res.status(500).json({ error: "Failed to fetch human delay settings" });
@@ -1422,9 +1491,9 @@ export async function registerRoutes(
 
   app.patch("/api/settings/human-delay", requireAuth, requirePermission("MANAGE_AUTOSEND"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const humanDelayPatchUser = await storage.getUser(req.userId);
+      if (!humanDelayPatchUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
 
       const parseResult = humanDelaySettingsValidation.safeParse(req.body);
@@ -1446,7 +1515,7 @@ export async function registerRoutes(
       } = parseResult.data;
 
       const updated = await storage.upsertHumanDelaySettings({
-        tenantId: tenant.id,
+        tenantId: humanDelayPatchUser.tenantId,
         enabled,
         delayProfiles,
         nightMode,
@@ -1493,10 +1562,11 @@ export async function registerRoutes(
         return res.status(403).json({ error: "RAG feature is disabled" });
       }
 
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const ragRegenUser = await storage.getUser(req.userId);
+      if (!ragRegenUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
+      const tenant = { id: ragRegenUser.tenantId };
 
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const batchSize = Math.min(parseInt(req.query.batchSize as string) || 10, 50);
@@ -1580,17 +1650,19 @@ export async function registerRoutes(
       const isRagEnabled = await featureFlagService.isEnabled("RAG_ENABLED");
       const isServiceAvailable = embeddingService.isAvailable();
 
-      const tenant = await storage.getDefaultTenant();
+      const ragStatusUser = await storage.getUser(req.userId);
+      if (!ragStatusUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const ragTenantId = ragStatusUser.tenantId;
       let pendingChunks = 0;
       let staleChunks = 0;
-      
-      if (tenant) {
-        const pending = await storage.getRagChunksWithoutEmbedding(tenant.id, 1000);
-        pendingChunks = pending.length;
-        
-        const stale = await storage.getRagChunksWithStaleHash(tenant.id, 1000);
-        staleChunks = stale.length;
-      }
+
+      const pending = await storage.getRagChunksWithoutEmbedding(ragTenantId, 1000);
+      pendingChunks = pending.length;
+
+      const stale = await storage.getRagChunksWithStaleHash(ragTenantId, 1000);
+      staleChunks = stale.length;
 
       res.json({
         ragEnabled: isRagEnabled,
@@ -1613,12 +1685,12 @@ export async function registerRoutes(
         return res.status(403).json({ error: "RAG feature is disabled" });
       }
 
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const ragInvalidateUser = await storage.getUser(req.userId);
+      if (!ragInvalidateUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
 
-      const result = await storage.invalidateStaleEmbeddings(tenant.id);
+      const result = await storage.invalidateStaleEmbeddings(ragInvalidateUser.tenantId);
       console.log(`[RAG] Invalidated ${result.invalidated} stale embeddings`);
 
       res.json(result);
@@ -1632,27 +1704,11 @@ export async function registerRoutes(
 
   app.get("/api/admin/training-samples", requireAuth, requirePermission("MANAGE_TRAINING"), async (req: Request, res: Response) => {
     try {
-      // Tenant isolation: get tenant from authenticated user context
-      let tenantId: string;
-      if (req.userId && req.userId !== "system") {
-        const user = await storage.getUser(req.userId);
-        if (user?.tenantId) {
-          tenantId = user.tenantId;
-        } else {
-          // Fallback to default tenant for users without explicit tenantId
-          const tenant = await storage.getDefaultTenant();
-          if (!tenant) {
-            return res.status(404).json({ error: "Tenant not found" });
-          }
-          tenantId = tenant.id;
-        }
-      } else {
-        const tenant = await storage.getDefaultTenant();
-        if (!tenant) {
-          return res.status(404).json({ error: "Tenant not found" });
-        }
-        tenantId = tenant.id;
+      const trainingSamplesUser = await storage.getUser(req.userId);
+      if (!trainingSamplesUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
+      const tenantId = trainingSamplesUser.tenantId;
       
       const outcome = req.query.outcome as TrainingOutcome | undefined;
       const samples = await getTrainingSamples(tenantId, outcome);
@@ -1665,26 +1721,11 @@ export async function registerRoutes(
 
   app.post("/api/admin/training-samples/export", requireAuth, requirePermission("EXPORT_TRAINING_DATA"), async (req: Request, res: Response) => {
     try {
-      // Tenant isolation: get tenant from authenticated user context
-      let tenantId: string;
-      if (req.userId && req.userId !== "system") {
-        const user = await storage.getUser(req.userId);
-        if (user?.tenantId) {
-          tenantId = user.tenantId;
-        } else {
-          const tenant = await storage.getDefaultTenant();
-          if (!tenant) {
-            return res.status(404).json({ error: "Tenant not found" });
-          }
-          tenantId = tenant.id;
-        }
-      } else {
-        const tenant = await storage.getDefaultTenant();
-        if (!tenant) {
-          return res.status(404).json({ error: "Tenant not found" });
-        }
-        tenantId = tenant.id;
+      const trainingExportUser = await storage.getUser(req.userId);
+      if (!trainingExportUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
+      const tenantId = trainingExportUser.tenantId;
       
       const outcome = req.body.outcome as TrainingOutcome | undefined;
       const exportData = await exportTrainingSamples(tenantId, outcome);
@@ -2895,6 +2936,19 @@ export async function registerRoutes(
 
   app.patch("/api/escalations/:id", requireAuth, requirePermission("MANAGE_CONVERSATIONS"), async (req: Request, res: Response) => {
     try {
+      const escalUser = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!escalUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const existingEscalation = await storage.getEscalationEvent(req.params.id);
+      if (!existingEscalation) {
+        return res.status(404).json({ error: "Escalation not found" });
+      }
+      const escalConv = await storage.getConversation(existingEscalation.conversationId);
+      if (!escalConv || escalConv.tenantId !== escalUser.tenantId) {
+        return res.status(404).json({ error: "Escalation not found" });
+      }
+
       const { status } = req.body;
       const escalation = await storage.updateEscalationEvent(req.params.id, {
         status,
@@ -2920,11 +2974,11 @@ export async function registerRoutes(
 
   app.get("/api/products", requireAuth, requirePermission("MANAGE_PRODUCTS"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const productsUser = await storage.getUser(req.userId);
+      if (!productsUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
-      const products = await storage.getProductsByTenant(tenant.id);
+      const products = await storage.getProductsByTenant(productsUser.tenantId);
       res.json(products);
     } catch (error) {
       console.error("Error fetching products:", error);
@@ -2934,9 +2988,9 @@ export async function registerRoutes(
 
   app.post("/api/products", requireAuth, requirePermission("MANAGE_PRODUCTS"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const createProductUser = await storage.getUser(req.userId);
+      if (!createProductUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
       
       // Validate request body
@@ -2946,7 +3000,7 @@ export async function registerRoutes(
       }
       
       const product = await storage.createProduct({
-        tenantId: tenant.id,
+        tenantId: createProductUser.tenantId,
         ...productData.data,
       });
       res.status(201).json(product);
@@ -2958,6 +3012,14 @@ export async function registerRoutes(
 
   app.patch("/api/products/:id", requireAuth, requirePermission("MANAGE_PRODUCTS"), async (req: Request, res: Response) => {
     try {
+      const productUpdateUser = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!productUpdateUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const existingProduct = await storage.getProduct(req.params.id);
+      if (!existingProduct || existingProduct.tenantId !== productUpdateUser.tenantId) {
+        return res.status(404).json({ error: "Product not found" });
+      }
       const product = await storage.updateProduct(req.params.id, req.body);
       if (!product) {
         return res.status(404).json({ error: "Product not found" });
@@ -2971,8 +3033,12 @@ export async function registerRoutes(
 
   app.delete("/api/products/:id", requireAuth, requirePermission("MANAGE_PRODUCTS"), async (req: Request, res: Response) => {
     try {
+      const productDeleteUser = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!productDeleteUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const product = await storage.getProduct(req.params.id);
-      if (!product) {
+      if (!product || product.tenantId !== productDeleteUser.tenantId) {
         return res.status(404).json({ error: "Product not found" });
       }
       
@@ -2994,9 +3060,9 @@ export async function registerRoutes(
     try {
       // For MVP, we'll handle CSV parsing on the frontend
       // This endpoint expects an array of product objects
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const importProductsUser = await storage.getUser(req.userId);
+      if (!importProductsUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
       
       const products = req.body.products || [];
@@ -3004,7 +3070,7 @@ export async function registerRoutes(
       
       for (const p of products) {
         await storage.createProduct({
-          tenantId: tenant.id,
+          tenantId: importProductsUser.tenantId,
           name: p.name,
           sku: p.sku,
           description: p.description,
@@ -3027,11 +3093,11 @@ export async function registerRoutes(
 
   app.get("/api/knowledge-docs", requireAuth, requirePermission("MANAGE_KNOWLEDGE_BASE"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const knowledgeDocsUser = await storage.getUser(req.userId);
+      if (!knowledgeDocsUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
-      const docs = await storage.getKnowledgeDocsByTenant(tenant.id);
+      const docs = await storage.getKnowledgeDocsByTenant(knowledgeDocsUser.tenantId);
       res.json(docs);
     } catch (error) {
       console.error("Error fetching knowledge docs:", error);
@@ -3041,9 +3107,9 @@ export async function registerRoutes(
 
   app.post("/api/knowledge-docs", requireAuth, requirePermission("MANAGE_KNOWLEDGE_BASE"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
-      if (!tenant) {
-        return res.status(404).json({ error: "Tenant not found" });
+      const createDocUser = await storage.getUser(req.userId);
+      if (!createDocUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
       }
       
       // Validate request body
@@ -3053,7 +3119,7 @@ export async function registerRoutes(
       }
       
       const doc = await storage.createKnowledgeDoc({
-        tenantId: tenant.id,
+        tenantId: createDocUser.tenantId,
         ...docData.data,
       });
       res.status(201).json(doc);
@@ -3065,6 +3131,14 @@ export async function registerRoutes(
 
   app.patch("/api/knowledge-docs/:id", requireAuth, requirePermission("MANAGE_KNOWLEDGE_BASE"), async (req: Request, res: Response) => {
     try {
+      const docUpdateUser = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!docUpdateUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+      const existingDoc = await storage.getKnowledgeDoc(req.params.id);
+      if (!existingDoc || existingDoc.tenantId !== docUpdateUser.tenantId) {
+        return res.status(404).json({ error: "Document not found" });
+      }
       const doc = await storage.updateKnowledgeDoc(req.params.id, req.body);
       if (!doc) {
         return res.status(404).json({ error: "Document not found" });
@@ -3078,8 +3152,12 @@ export async function registerRoutes(
 
   app.delete("/api/knowledge-docs/:id", requireAuth, requirePermission("MANAGE_KNOWLEDGE_BASE"), async (req: Request, res: Response) => {
     try {
+      const docDeleteUser = req.userId ? await storage.getUser(req.userId) : undefined;
+      if (!docDeleteUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
       const doc = await storage.getKnowledgeDoc(req.params.id);
-      if (!doc) {
+      if (!doc || doc.tenantId !== docDeleteUser.tenantId) {
         return res.status(404).json({ error: "Document not found" });
       }
       
@@ -3195,8 +3273,8 @@ export async function registerRoutes(
         },
         await (async () => {
           // Get tenant ID for WhatsApp Personal status check
-          const tenant = await storage.getDefaultTenant();
-          const tenantId = tenant?.id || "default";
+          const waPersonalUser = req.userId ? await storage.getUser(req.userId) : undefined;
+          const tenantId = waPersonalUser?.tenantId || "default";
           const sessionInfo = WhatsAppPersonalAdapter.getSessionInfo(tenantId);
           
           return {

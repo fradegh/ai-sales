@@ -1,9 +1,13 @@
 /**
  * Database migration script.
- * Uses Drizzle Kit to run migrations from the /migrations folder.
- * 
+ * Applies pre-generated SQL migration files from ./migrations/ via drizzle-kit migrate.
+ * Migrations must be generated first with: npx drizzle-kit generate
+ *
  * Usage: npx tsx server/scripts/migrate.ts
- * Or: npm run db:migrate (if script added to package.json)
+ * Or:    npm run db:migrate
+ *
+ * WARNING: Do NOT use drizzle-kit push in production — it bypasses migration files,
+ * cannot be rolled back, and the --force variant silently drops columns/types.
  */
 
 import { exec } from "child_process";
@@ -12,24 +16,22 @@ import { promisify } from "util";
 const execAsync = promisify(exec);
 
 async function runMigrations() {
-  console.log("🔄 Running database migrations...");
-  
+  console.log("Running database migrations...");
+
   if (!process.env.DATABASE_URL) {
-    console.error("❌ DATABASE_URL environment variable is not set");
+    console.error("DATABASE_URL environment variable is not set");
     process.exit(1);
   }
-  
+
   try {
-    // Use drizzle-kit push to sync schema with database
-    // This is the recommended approach for Drizzle ORM
-    const { stdout, stderr } = await execAsync("npx drizzle-kit push");
-    
+    const { stdout, stderr } = await execAsync("npx drizzle-kit migrate");
+
     if (stdout) console.log(stdout);
     if (stderr) console.error(stderr);
-    
-    console.log("✅ Migrations completed successfully");
+
+    console.log("Migrations completed successfully");
   } catch (error) {
-    console.error("❌ Migration failed:", error);
+    console.error("Migration failed:", error);
     process.exit(1);
   }
 }

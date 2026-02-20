@@ -72,28 +72,35 @@ declare global {
 
 /**
  * Extract user role from request.
- * In production: should come from session/JWT.
+ * In production: reads from req.session.role (set by auth service on login).
  * In development/staging: allows X-Debug-Role header for testing.
+ * Falls back to "guest" (least privilege) when no authenticated role is present.
  */
 export function extractUserRole(req: Request): UserRole {
   const config = getConfig();
   
-  // In development/staging/test, allow debug role header for testing
-  // SECURITY: Debug role is ONLY allowed in non-production AND must be explicitly provided
+  // In development/staging/test, allow debug role header for testing.
+  // SECURITY: Debug role is ONLY allowed in non-production AND must be explicitly provided.
   if (config.NODE_ENV !== "production") {
     const debugRole = req.headers["x-debug-role"] as string;
     if (debugRole && ["owner", "admin", "operator", "viewer", "guest"].includes(debugRole)) {
       return debugRole as UserRole;
     }
     // In non-production without explicit debug header, default to operator (not admin!)
-    // This allows basic API access but blocks admin routes
+    // This allows basic API access but blocks admin routes during development.
     return "operator";
   }
   
-  // TODO: In production, extract from session/JWT
-  // When auth is implemented, this will check req.session.user.role
-  // For now, default to operator in production
-  return "operator";
+  // In production, read role from the authenticated session.
+  // session.role is written by the auth service at login time.
+  const session = (req as any).session;
+  const validRoles: UserRole[] = ["owner", "admin", "operator", "viewer", "guest"];
+  if (session?.role && validRoles.includes(session.role as UserRole)) {
+    return session.role as UserRole;
+  }
+  
+  // No authenticated session role — apply least-privilege default.
+  return "guest";
 }
 
 /**

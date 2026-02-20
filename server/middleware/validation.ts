@@ -75,6 +75,26 @@ export const productBodySchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
+// Tenant settings update — only user-editable fields, no security-sensitive fields
+// Explicitly excludes: id, status (fraud prevention), createdAt
+export const patchTenantSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  language: z.string().max(10).optional(),
+  tone: z.enum(["formal", "friendly"]).optional(),
+  addressStyle: z.enum(["vy", "ty"]).optional(),
+  currency: z.string().length(3).optional(),
+  timezone: z.string().max(50).optional(),
+  workingHoursStart: z.string().regex(/^\d{2}:\d{2}$/, "Must be HH:MM format").optional(),
+  workingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/, "Must be HH:MM format").optional(),
+  workingDays: z.array(z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"])).optional(),
+  autoReplyOutsideHours: z.boolean().optional(),
+  escalationEmail: z.string().email().max(254).nullable().optional(),
+  escalationTelegram: z.string().max(100).nullable().optional(),
+  allowDiscounts: z.boolean().optional(),
+  maxDiscountPercent: z.number().int().min(0).max(100).optional(),
+  templates: z.record(z.string()).optional(),
+});
+
 // Knowledge doc validation
 export const knowledgeDocBodySchema = z.object({
   title: z.string().min(1).max(200),
