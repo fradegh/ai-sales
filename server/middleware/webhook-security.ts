@@ -61,6 +61,10 @@ export function extractTimestampFromHeader(
   return isNaN(parsed) ? null : parsed;
 }
 
+function isProductionLike(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+}
+
 export function verifyTelegramWebhook(
   headers: Record<string, string>,
   body: unknown,
@@ -68,6 +72,9 @@ export function verifyTelegramWebhook(
   config?: { timestampTolerance?: number }
 ): WebhookVerifyResult {
   if (!secret) {
+    if (isProductionLike()) {
+      return { valid: false, error: "Webhook secret not configured" };
+    }
     return { valid: true };
   }
 
@@ -110,6 +117,9 @@ export function verifyWhatsAppWebhook(
   }
 
   if (!secret) {
+    if (isProductionLike()) {
+      return { valid: false, error: "Webhook secret not configured" };
+    }
     return { valid: true };
   }
 
@@ -141,6 +151,9 @@ export function verifyMaxWebhook(
   config?: { timestampTolerance?: number }
 ): WebhookVerifyResult {
   if (!secret) {
+    if (isProductionLike()) {
+      return { valid: false, error: "Webhook secret not configured" };
+    }
     return { valid: true };
   }
 

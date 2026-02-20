@@ -7,13 +7,39 @@ import {
 } from "../services/message-queue";
 import { auditLog } from "../services/audit-log";
 import { getChannelAdapter } from "../services/channel-adapter";
+import { storage } from "../storage";
 
 const QUEUE_NAME = "message_send_queue";
 
+// Terminal conversation statuses — sending into these states makes no sense.
+const TERMINAL_CONVERSATION_STATUSES = new Set(["resolved", "closed"]);
+
+// Suggestion statuses that mean the operator explicitly cancelled the send.
+const CANCELLED_SUGGESTION_STATUSES = new Set(["rejected", "cancelled"]);
+
 async function isMessageStillValid(
   messageId: string,
-  conversationId: string
+  conversationId: string,
+  suggestionId?: string
 ): Promise<{ valid: boolean; reason?: string }> {
+  const conversation = await storage.getConversation(conversationId);
+  if (!conversation) {
+    return { valid: false, reason: "Conversation not found" };
+  }
+  if (TERMINAL_CONVERSATION_STATUSES.has(conversation.status)) {
+    return { valid: false, reason: `Conversation is ${conversation.status}` };
+  }
+
+  if (suggestionId) {
+    const suggestion = await storage.getAiSuggestion(suggestionId);
+    if (!suggestion) {
+      return { valid: false, reason: "Suggestion not found" };
+    }
+    if (CANCELLED_SUGGESTION_STATUSES.has(suggestion.status ?? "")) {
+      return { valid: false, reason: `Suggestion is ${suggestion.status}` };
+    }
+  }
+
   return { valid: true };
 }
 
@@ -21,18 +47,36 @@ async function markMessageAsSent(
   messageId: string,
   externalId: string
 ): Promise<void> {
-  console.log(`[Worker] Message marked as sent: ${messageId}, externalId: ${externalId}`);
+  const existing = await storage.getMessage(messageId);
+  const existingMeta = (existing?.metadata ?? {}) as Record<string, unknown>;
+  await storage.updateMessage(messageId, {
+    metadata: {
+      ...existingMeta,
+      deliveryStatus: "sent",
+      deliveredAt: new Date().toISOString(),
+      externalMessageId: externalId || null,
+    } as unknown,
+  });
 }
 
 async function markMessageAsFailed(
   messageId: string,
   error: string
 ): Promise<void> {
-  console.log(`[Worker] Message marked as failed: ${messageId}, error: ${error}`);
+  const existing = await storage.getMessage(messageId);
+  const existingMeta = (existing?.metadata ?? {}) as Record<string, unknown>;
+  await storage.updateMessage(messageId, {
+    metadata: {
+      ...existingMeta,
+      deliveryStatus: "failed",
+      failedAt: new Date().toISOString(),
+      lastError: error,
+    } as unknown,
+  });
 }
 
 async function processDelayedMessage(job: Job<DelayedMessageJobData>): Promise<void> {
-  const { messageId, conversationId, channel, text, typingEnabled, createdAt, delayMs } = job.data;
+  const { messageId, conversationId, suggestionId, channel, text, typingEnabled, createdAt, delayMs } = job.data;
 
   const jobStartTime = Date.now();
   const actualDelayMs = jobStartTime - new Date(createdAt).getTime();
@@ -40,7 +84,7 @@ async function processDelayedMessage(job: Job<DelayedMessageJobData>): Promise<v
   console.log(`[Worker] Processing job: ${job.id}, messageId: ${messageId}`);
   console.log(`[Worker] Scheduled delay: ${delayMs}ms, Actual delay: ${actualDelayMs}ms`);
 
-  const validity = await isMessageStillValid(messageId, conversationId);
+  const validity = await isMessageStillValid(messageId, conversationId, suggestionId);
   if (!validity.valid) {
     console.log(`[Worker] Message no longer valid: ${messageId}, reason: ${validity.reason}`);
     await auditLog.log(
