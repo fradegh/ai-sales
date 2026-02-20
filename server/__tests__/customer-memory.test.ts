@@ -162,9 +162,9 @@ describe("Customer Memory API", () => {
   describe("FrequentTopics Increment (via MemStorage)", () => {
     it("should increment topic counter", async () => {
       if (!testCustomerId) return;
-      const { MemStorage } = await import("../storage");
+      const { MemStorage } = await import("./helpers/mem-storage");
       const memStorage = new MemStorage();
-      
+
       // Create test customer in MemStorage
       const testCustomer = await memStorage.createCustomer({
         tenantId: "test-tenant",
@@ -183,7 +183,7 @@ describe("Customer Memory API", () => {
     });
 
     it("should increment multiple different topics", async () => {
-      const { MemStorage } = await import("../storage");
+      const { MemStorage } = await import("./helpers/mem-storage");
       const memStorage = new MemStorage();
       
       const testCustomer = await memStorage.createCustomer({

@@ -120,16 +120,16 @@ describe("Customer Memory Metrics structure", () => {
   });
 
   it("storage interface should have count methods for metrics", async () => {
-    const { MemStorage } = await import("../storage");
+    const { MemStorage } = await import("./helpers/mem-storage");
     const storage = new MemStorage();
-    
+
     expect(typeof storage.getCustomersCount).toBe("function");
     expect(typeof storage.getCustomerNotesCount).toBe("function");
     expect(typeof storage.getCustomerMemoryCount).toBe("function");
   });
 
   it("count methods should return numbers", async () => {
-    const { MemStorage } = await import("../storage");
+    const { MemStorage } = await import("./helpers/mem-storage");
     const storage = new MemStorage();
     
     const customersCount = await storage.getCustomersCount("test-tenant");

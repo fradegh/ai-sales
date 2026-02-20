@@ -3,7 +3,8 @@ import request from "supertest";
 import express, { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
 import { registerRoutes } from "../routes";
-import { MemStorage, IStorage } from "../storage";
+import { MemStorage } from "./helpers/mem-storage";
+import type { IStorage } from "../storage";
 import http from "http";
 
 vi.mock("openai", () => ({

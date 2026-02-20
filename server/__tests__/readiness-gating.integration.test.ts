@@ -3,7 +3,7 @@ import request from "supertest";
 import express, { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
 import http from "http";
-import { MemStorage } from "../storage";
+import { MemStorage } from "./helpers/mem-storage";
 import * as storageModule from "../storage";
 
 describe("Readiness Gating Integration", () => {
