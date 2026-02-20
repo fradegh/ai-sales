@@ -36,6 +36,7 @@ import {
   type VehicleLookupCase, type InsertVehicleLookupCase,
   type VehicleLookupCaseStatus, type VehicleLookupVerificationStatus,
   type PriceSnapshot, type InsertPriceSnapshot,
+  type InternalPrice, type InsertInternalPrice,
   type TelegramSession, type InsertTelegramSession,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
@@ -44,7 +45,7 @@ export interface IStorage {
   // Tenants
   getTenant(id: string): Promise<Tenant | undefined>;
   getDefaultTenant(): Promise<Tenant | undefined>;
-  getTenantTemplates(tenantId: string): Promise<{ gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string }>;
+  getTenantTemplates(tenantId: string): Promise<{ gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string; gearboxLookupFallback: string; gearboxNoVin: string }>;
   createTenant(tenant: InsertTenant): Promise<Tenant>;
   updateTenant(id: string, data: Partial<InsertTenant>): Promise<Tenant | undefined>;
 
@@ -249,7 +250,12 @@ export interface IStorage {
 
   // Price Snapshots
   createPriceSnapshot(data: InsertPriceSnapshot): Promise<PriceSnapshot>;
-  getLatestPriceSnapshot(tenantId: string, oem: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined>;
+  getLatestPriceSnapshot(tenantId: string, searchKey: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined>;
+  getPriceSnapshotsByOem(tenantId: string, oem: string, limit?: number): Promise<PriceSnapshot[]>;
+
+  // Internal Prices
+  upsertInternalPrice(data: InsertInternalPrice): Promise<InternalPrice>;
+  getInternalPricesByOem(tenantId: string, oem: string): Promise<InternalPrice[]>;
 
   // Telegram Accounts (multi-account sessions)
   getTelegramAccountsByTenant(tenantId: string): Promise<TelegramSession[]>;
@@ -515,7 +521,7 @@ export class MemStorage implements IStorage {
     return this.tenants.get(id);
   }
 
-  async getTenantTemplates(tenantId: string): Promise<{ gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string }> {
+  async getTenantTemplates(tenantId: string): Promise<{ gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string; gearboxLookupFallback: string; gearboxNoVin: string }> {
     const { getMergedGearboxTemplates } = await import("./services/gearbox-templates");
     const tenant = await this.getTenant(tenantId);
     return getMergedGearboxTemplates(tenant ?? undefined);
@@ -1622,6 +1628,19 @@ export class MemStorage implements IStorage {
 
   async getLatestPriceSnapshot(_tenantId: string, _oem: string, _maxAgeMinutes: number): Promise<PriceSnapshot | undefined> {
     return undefined;
+  }
+
+  async getPriceSnapshotsByOem(_tenantId: string, _oem: string, _limit?: number): Promise<PriceSnapshot[]> {
+    return [];
+  }
+
+  async upsertInternalPrice(data: InsertInternalPrice): Promise<InternalPrice> {
+    const id = randomUUID();
+    return { ...data, id, updatedAt: new Date() } as InternalPrice;
+  }
+
+  async getInternalPricesByOem(_tenantId: string, _oem: string): Promise<InternalPrice[]> {
+    return [];
   }
 
   // Telegram Accounts (stubs for MemStorage)

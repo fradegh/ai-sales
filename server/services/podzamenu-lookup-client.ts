@@ -20,9 +20,10 @@ export interface GearboxOemCandidate {
 
 export interface GearboxInfo {
   model: string | null;
+  factoryCode: string | null;
   oem: string | null;
   oemCandidates: GearboxOemCandidate[];
-  oemStatus: "FOUND" | "NOT_FOUND" | "NOT_AVAILABLE";
+  oemStatus: "FOUND" | "NOT_FOUND" | "NOT_AVAILABLE" | "MODEL_ONLY";
 }
 
 export interface LookupResponse {
@@ -103,6 +104,7 @@ export async function lookupByVehicleId(
 
     const gearbox: GearboxInfo = {
       model: data.gearbox.model ?? null,
+      factoryCode: data.gearbox.factoryCode ?? null,
       oem: data.gearbox.oem ?? null,
       oemCandidates: Array.isArray(data.gearbox.oemCandidates)
         ? data.gearbox.oemCandidates

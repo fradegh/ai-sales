@@ -1,12 +1,47 @@
 import { storage } from "../storage";
 import type { ParsedIncomingMessage } from "./channel-adapter";
-import { getMergedGearboxTemplates } from "./gearbox-templates";
+import { getMergedGearboxTemplates, fillGearboxTemplate } from "./gearbox-templates";
+import { detectGearboxType } from "./price-sources/types";
 import { realtimeService } from "./websocket-server";
 
 const VIN_CHARS = "A-HJ-NPR-Z0-9"; // VIN excludes I, O, Q
 const VIN_REGEX = new RegExp(`[${VIN_CHARS}]{17}`, "gi");
 const VIN_INCOMPLETE_REGEX = new RegExp(`[${VIN_CHARS}]{16}(?![${VIN_CHARS}])`, "gi");
 const FRAME_REGEX = /[A-Z0-9]{3,}\s*-\s*[A-Z0-9]{3,}/gi;
+
+// Japanese FRAME without dash: 2-5 letters + 6-10 digits, total 8-14 chars
+// e.g. EU11105303, GX1001234567, AT2111234567
+const FRAME_DASHLESS_REGEX = /\b[A-Z]{2,5}\d{6,10}\b/gi;
+const FRAME_DASHLESS_MIN_LEN = 8;
+const FRAME_DASHLESS_MAX_LEN = 14;
+
+// Cyrillic chars visually identical to Latin ones (uppercase + lowercase)
+const CYRILLIC_TO_LATIN: Record<string, string> = {
+  "\u0410": "A", "\u0430": "a", // А → A
+  "\u0412": "B",                // В → B (lowercase в not similar)
+  "\u0421": "C", "\u0441": "c", // С → C
+  "\u0415": "E", "\u0435": "e", // Е → E
+  "\u041A": "K", "\u043A": "k", // К → K
+  "\u041C": "M", "\u043C": "m", // М → M
+  "\u041D": "H", "\u043D": "h", // Н → H
+  "\u041E": "O", "\u043E": "o", // О → O
+  "\u0420": "P", "\u0440": "p", // Р → P
+  "\u0422": "T", "\u0442": "t", // Т → T
+  "\u0423": "Y", "\u0443": "y", // У → Y
+  "\u0425": "X", "\u0445": "x", // Х → X
+};
+const CYRILLIC_RE = new RegExp(`[${Object.keys(CYRILLIC_TO_LATIN).join("")}]`, "g");
+
+/**
+ * Pre-normalize text for vehicle ID detection:
+ * 1) Replace Cyrillic lookalikes with Latin equivalents
+ * 2) Replace en-dash, em-dash, minus sign, non-breaking hyphen → regular hyphen
+ */
+function normalizeVehicleIdText(text: string): string {
+  let result = text.replace(CYRILLIC_RE, (ch) => CYRILLIC_TO_LATIN[ch] ?? ch);
+  result = result.replace(/[\u2013\u2014\u2212\u2011]/g, "-");
+  return result;
+}
 
 export type VehicleIdDetection =
   | { idType: "VIN"; rawValue: string; normalizedValue: string }
@@ -18,38 +53,55 @@ export function detectVehicleIdFromText(text: string): VehicleIdDetection | null
   const trimmed = text.trim();
   if (!trimmed.length) return null;
 
+  // Normalize Cyrillic lookalikes and non-standard dashes before matching
+  const normalized = normalizeVehicleIdText(trimmed);
+
   const candidates: { index: number; det: VehicleIdDetection }[] = [];
 
   // VIN 17 (full)
   let m: RegExpExecArray | null;
   VIN_REGEX.lastIndex = 0;
-  while ((m = VIN_REGEX.exec(trimmed)) !== null) {
+  while ((m = VIN_REGEX.exec(normalized)) !== null) {
     const raw = m[0];
-    const normalized = raw.replace(/\s/g, "").toUpperCase();
-    if (normalized.length === 17) {
-      candidates.push({ index: m.index, det: { idType: "VIN", rawValue: raw, normalizedValue: normalized } });
+    const norm = raw.replace(/\s/g, "").toUpperCase();
+    if (norm.length === 17) {
+      candidates.push({ index: m.index, det: { idType: "VIN", rawValue: trimmed.substring(m.index, m.index + raw.length), normalizedValue: norm } });
     }
   }
 
   // VIN 16 (incomplete)
   VIN_INCOMPLETE_REGEX.lastIndex = 0;
-  while ((m = VIN_INCOMPLETE_REGEX.exec(trimmed)) !== null) {
+  while ((m = VIN_INCOMPLETE_REGEX.exec(normalized)) !== null) {
     const raw = m[0];
-    const normalized = raw.replace(/\s/g, "").toUpperCase();
-    if (normalized.length === 16) {
+    const norm = raw.replace(/\s/g, "").toUpperCase();
+    if (norm.length === 16) {
       candidates.push({
         index: m.index,
-        det: { idType: "VIN", rawValue: raw, normalizedValue: normalized, isIncompleteVin: true },
+        det: { idType: "VIN", rawValue: trimmed.substring(m.index, m.index + raw.length), normalizedValue: norm, isIncompleteVin: true },
       });
     }
   }
 
-  // FRAME (pattern with dash)
+  // FRAME with dash (e.g. GX100-1234567)
   FRAME_REGEX.lastIndex = 0;
-  while ((m = FRAME_REGEX.exec(trimmed)) !== null) {
+  while ((m = FRAME_REGEX.exec(normalized)) !== null) {
     const raw = m[0].trim();
-    const normalized = raw.replace(/\s/g, "").toUpperCase();
-    candidates.push({ index: m.index, det: { idType: "FRAME", rawValue: raw, normalizedValue: normalized } });
+    const norm = raw.replace(/\s/g, "").toUpperCase();
+    candidates.push({ index: m.index, det: { idType: "FRAME", rawValue: trimmed.substring(m.index, m.index + m[0].length).trim(), normalizedValue: norm } });
+  }
+
+  // FRAME without dash — Japanese chassis codes (e.g. EU11105303)
+  FRAME_DASHLESS_REGEX.lastIndex = 0;
+  while ((m = FRAME_DASHLESS_REGEX.exec(normalized)) !== null) {
+    const raw = m[0];
+    if (raw.length < FRAME_DASHLESS_MIN_LEN || raw.length > FRAME_DASHLESS_MAX_LEN) continue;
+    const norm = raw.toUpperCase();
+    // Skip if already covered by a VIN or dashed FRAME candidate at the same position
+    const alreadyCovered = candidates.some(
+      (c) => c.index <= m!.index && c.index + c.det.rawValue.length >= m!.index + raw.length
+    );
+    if (alreadyCovered) continue;
+    candidates.push({ index: m.index, det: { idType: "FRAME", rawValue: trimmed.substring(m.index, m.index + raw.length), normalizedValue: norm } });
   }
 
   if (candidates.length === 0) return null;
@@ -348,6 +400,39 @@ export async function processIncomingMessageFull(
           });
           realtimeService.broadcastNewSuggestion(tenant.id, result.conversationId, suggestion.id);
           console.log(`[InboundHandler] Created gearbox_tag_request suggestion for vehicle lookup case ${row.id}`);
+        }
+      }
+    }
+
+    // If no VIN/FRAME detected but customer mentioned a gearbox type, prompt for VIN
+    if (!vehicleDet && text) {
+      const mentionedGearboxType = detectGearboxType(text);
+      if (mentionedGearboxType !== "unknown") {
+        const tenant = await storage.getTenant(tenantId) ?? await storage.getDefaultTenant();
+        if (tenant) {
+          const pendingSuggestion = await storage.getPendingSuggestionByConversation(result.conversationId);
+          if (!pendingSuggestion) {
+            const templates = getMergedGearboxTemplates(tenant);
+            const replyText = fillGearboxTemplate(templates.gearboxNoVin, {
+              gearboxType: mentionedGearboxType.toUpperCase(),
+            });
+            const suggestion = await storage.createAiSuggestion({
+              conversationId: result.conversationId,
+              messageId: result.messageId,
+              suggestedReply: replyText,
+              intent: "gearbox_no_vin",
+              confidence: 0.9,
+              needsApproval: true,
+              needsHandoff: false,
+              questionsToAsk: [],
+              usedSources: [],
+              status: "pending",
+              decision: "NEED_APPROVAL",
+              autosendEligible: false,
+            });
+            realtimeService.broadcastNewSuggestion(tenant.id, result.conversationId, suggestion.id);
+            console.log(`[InboundHandler] Gearbox type "${mentionedGearboxType}" without VIN, created gearbox_no_vin suggestion`);
+          }
         }
       }
     }

@@ -8,6 +8,7 @@ import {
 } from "../services/podzamenu-lookup-client";
 import type { GearboxInfo } from "../services/podzamenu-lookup-client";
 import { fillGearboxTemplate } from "../services/gearbox-templates";
+import { detectGearboxType } from "../services/price-sources/types";
 import { storage } from "../storage";
 
 const QUEUE_NAME = "vehicle_lookup_queue";
@@ -17,16 +18,18 @@ const DUPLICATE_SUGGESTION_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
 function computeLookupConfidence(gearbox: GearboxInfo, evidence: Record<string, unknown>): number {
   let c = 0.5;
   const hasOem = gearbox.oemStatus === "FOUND" && !!gearbox.oem;
+  const isModelOnly = gearbox.oemStatus === "MODEL_ONLY" && !!gearbox.model;
   if (hasOem) c += 0.3;
+  if (isModelOnly) c += 0.2;
   if (evidence.sourceSelected === "podzamenu") c += 0.1;
   if (Array.isArray(gearbox.oemCandidates) && gearbox.oemCandidates.length > 0) c += 0.1;
   if (gearbox.oemStatus === "NOT_AVAILABLE") c -= 0.2;
-  if (!hasOem) c -= 0.2; // only model, no OEM
+  if (!hasOem && !isModelOnly) c -= 0.2;
   return Math.max(0, Math.min(1, c));
 }
 
 function buildResultSuggestionText(
-  templates: { gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string },
+  templates: { gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string; gearboxLookupFallback: string; gearboxNoVin: string },
   gearbox: GearboxInfo,
   evidence: Record<string, unknown>,
   lookupConfidence: number
@@ -34,8 +37,12 @@ function buildResultSuggestionText(
   const source = (evidence.sourceSelected as string) ?? (evidence.source as string) ?? "";
   const oem = gearbox.oem ?? "";
   const model = gearbox.model ?? "";
-  const params = { oem, model, source };
+  const factoryCode = gearbox.factoryCode ?? "";
+  const params = { oem, model, source, factoryCode };
 
+  if (gearbox.oemStatus === "MODEL_ONLY") {
+    return fillGearboxTemplate(templates.gearboxLookupModelOnly, params);
+  }
   if (lookupConfidence >= 0.8) {
     return fillGearboxTemplate(templates.gearboxLookupFound, params);
   }
@@ -57,7 +64,10 @@ async function createResultSuggestionIfNeeded(params: {
   const templates = await storage.getTenantTemplates(tenantId);
   const suggestedReply = buildResultSuggestionText(templates, gearbox, evidence, lookupConfidence);
 
-  const intent = gearbox.oemStatus === "FOUND" && gearbox.oem ? "other" : "gearbox_tag_request";
+  const intent =
+    (gearbox.oemStatus === "FOUND" && gearbox.oem) || gearbox.oemStatus === "MODEL_ONLY"
+      ? "other"
+      : "gearbox_tag_request";
 
   const recentSuggestions = await storage.getSuggestionsByConversation(conversationId);
   const cutoff = new Date(Date.now() - DUPLICATE_SUGGESTION_WINDOW_MS);
@@ -92,6 +102,93 @@ async function createResultSuggestionIfNeeded(params: {
   }
 
   console.log(`[VehicleLookupWorker] Created result suggestion ${suggestion.id} for conversation ${conversationId}`);
+}
+
+async function getLastCustomerMessageText(conversationId: string): Promise<string | null> {
+  const msgs = await storage.getMessagesByConversation(conversationId);
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "customer" && msgs[i].content) {
+      return msgs[i].content;
+    }
+  }
+  return null;
+}
+
+async function tryFallbackPriceLookup(params: {
+  tenantId: string;
+  conversationId: string;
+  messageId?: string;
+  gearbox: GearboxInfo;
+  vehicleMeta?: { make?: string; model?: string; year?: number };
+}): Promise<void> {
+  const { tenantId, conversationId, messageId, gearbox, vehicleMeta } = params;
+
+  const lastMessage = await getLastCustomerMessageText(conversationId);
+  if (!lastMessage) {
+    console.log("[VehicleLookupWorker] No customer message found for fallback gearbox type detection");
+    return;
+  }
+
+  const gearboxType = detectGearboxType(lastMessage);
+  if (gearboxType === "unknown") {
+    console.log("[VehicleLookupWorker] Gearbox type not detected in customer message, skipping fallback price lookup");
+    return;
+  }
+
+  const make = vehicleMeta?.make ?? null;
+  const model = vehicleMeta?.model ?? null;
+
+  const templates = await storage.getTenantTemplates(tenantId);
+  const fallbackText = fillGearboxTemplate(templates.gearboxLookupFallback, {
+    gearboxType: gearboxType.toUpperCase(),
+    make: make ?? "",
+    model: model ?? "",
+  });
+
+  const recentSuggestions = await storage.getSuggestionsByConversation(conversationId);
+  const cutoff = new Date(Date.now() - DUPLICATE_SUGGESTION_WINDOW_MS);
+  const hasDuplicate = recentSuggestions
+    .slice(0, 5)
+    .some((s) => s.suggestedReply === fallbackText && s.createdAt >= cutoff);
+
+  if (!hasDuplicate) {
+    const suggestion = await storage.createAiSuggestion({
+      conversationId,
+      messageId: messageId ?? null,
+      suggestedReply: fallbackText,
+      intent: "gearbox_fallback_search",
+      confidence: 0.5,
+      needsApproval: true,
+      needsHandoff: false,
+      questionsToAsk: [],
+      usedSources: [],
+      status: "pending",
+      decision: "NEED_APPROVAL",
+      autosendEligible: false,
+    });
+
+    try {
+      const { realtimeService } = await import("../services/websocket-server");
+      realtimeService.broadcastNewSuggestion(tenantId, conversationId, suggestion.id);
+    } catch {
+      // Skip broadcast if import fails
+    }
+    console.log(`[VehicleLookupWorker] Created fallback suggestion ${suggestion.id}`);
+  }
+
+  const { enqueuePriceLookup } = await import("../services/price-lookup-queue");
+  await enqueuePriceLookup({
+    tenantId,
+    conversationId,
+    oem: null,
+    searchFallback: {
+      make,
+      model,
+      gearboxType,
+      gearboxModel: gearbox.model ?? null,
+    },
+  });
+  console.log(`[VehicleLookupWorker] Fallback price lookup started: ${gearboxType} for ${make ?? "?"} ${model ?? "?"}`);
 }
 
 async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<void> {
@@ -151,9 +248,10 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       verificationStatus: "NEED_TAG_OPTIONAL",
     });
 
+    const factoryTag = gearbox.factoryCode ? `, factoryCode: ${gearbox.factoryCode}` : "";
     const logValue = hasOem
-      ? `gearbox OEM ${gearbox.oem}`
-      : `gearbox model ${gearbox.model} (OEM not available)`;
+      ? `gearbox OEM ${gearbox.oem}${factoryTag}`
+      : `gearbox model ${gearbox.model} (OEM not available)${factoryTag}`;
     const src = (lookupResult.evidence?.sourceSelected as string) ?? (lookupResult.evidence?.source as string) ?? "podzamenu";
     console.log(`[VehicleLookupWorker] Case completed: ${caseId} - ${logValue} [${src}], lookup confidence: ${lookupConfidence.toFixed(2)}`);
 
@@ -166,12 +264,39 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       lookupConfidence,
     });
 
-    if (lookupConfidence >= 0.85 && gearbox.oemStatus === "FOUND" && gearbox.oem) {
-      // TODO: check for active price lookup for this conversation (no storage method yet)
-      console.log("[VehicleLookupWorker] TODO: check active price lookup for conversation", conversationId);
+    const isModelOnly = gearbox.oemStatus === "MODEL_ONLY" && !!gearbox.model;
+
+    if (isModelOnly) {
+      const vehicleMeta = lookupResult.vehicleMeta as { make?: string; model?: string; year?: number } | undefined;
+      const lastMessage = await getLastCustomerMessageText(conversationId);
+      const gearboxType = lastMessage ? detectGearboxType(lastMessage) : "unknown" as const;
+
+      const { enqueuePriceLookup } = await import("../services/price-lookup-queue");
+      await enqueuePriceLookup({
+        tenantId,
+        conversationId,
+        oem: null,
+        searchFallback: {
+          make: vehicleMeta?.make ?? null,
+          model: vehicleMeta?.model ?? null,
+          gearboxType,
+          gearboxModel: gearbox.model ?? null,
+        },
+        isModelOnly: true,
+      });
+      console.log(`[VehicleLookupWorker] Auto-started price lookup (VW Group MODEL_ONLY, model: ${gearbox.model}).`);
+    } else if (lookupConfidence >= 0.85 && gearbox.oemStatus === "FOUND" && gearbox.oem) {
       const { enqueuePriceLookup } = await import("../services/price-lookup-queue");
       await enqueuePriceLookup({ tenantId, conversationId, oem: gearbox.oem });
       console.log("[VehicleLookupWorker] Auto-started price lookup (high confidence OEM).");
+    } else if (gearbox.oemStatus !== "FOUND" || !gearbox.oem) {
+      await tryFallbackPriceLookup({
+        tenantId,
+        conversationId,
+        messageId: caseRow.messageId ?? undefined,
+        gearbox,
+        vehicleMeta: lookupResult.vehicleMeta as { make?: string; model?: string; year?: number } | undefined,
+      });
     }
   } catch (error) {
     if (error instanceof PodzamenuLookupError && error.code === PODZAMENU_NOT_FOUND) {

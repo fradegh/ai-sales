@@ -5,11 +5,15 @@
 
 export const DEFAULT_GEARBOX_TEMPLATES = {
   gearboxLookupFound:
-    "По вашему VIN/FRAME получается коробка передач (OEM): {{oem}}.\nЕсли есть возможность — пришлите фото шильдика/маркировки КПП для сверки.\nЕсли сейчас не можете — продолжим подбор по OEM.\nИсточник: {{source}}.",
+    "По вашему VIN/FRAME получается коробка передач {{model}} (OEM: {{oem}}).\nЕсли есть возможность — пришлите фото шильдика/маркировки КПП для сверки.\nЕсли сейчас не можете — продолжим подбор по OEM.\nИсточник: {{source}}.",
   gearboxLookupModelOnly:
     "По VIN/FRAME определяется модель КПП: {{model}}. OEM номер узла на сайте не отобразился.\nЕсли можете — пришлите фото шильдика/маркировки КПП, чтобы точно определить OEM.\nИсточник: {{source}}.",
   gearboxTagRequest:
     "Начал проверку по VIN/номеру кузова 👍\nЧтобы точно сверить коробку и исключить ошибку, если есть возможность — пришлите фото шильдика (маркировки) на коробке передач.\nЕсли сейчас не можете — ничего страшного, продолжу подбор по OEM.",
+  gearboxLookupFallback:
+    "По VIN коробка передач {{gearboxType}} в каталоге не отображается.\nИщу варианты {{gearboxType}} {{make}} {{model}} на основе вашего запроса.\nЕсли есть фото шильдика/маркировки КПП — пришлите, это поможет точнее подобрать.",
+  gearboxNoVin:
+    "Для точного подбора {{gearboxType}} пришлите, пожалуйста, VIN-номер (17 символов) или номер кузова (FRAME).\nVIN обычно указан в свидетельстве о регистрации (СТС) или на табличке под лобовым стеклом.",
 } as const;
 
 export type GearboxTemplateKey = keyof typeof DEFAULT_GEARBOX_TEMPLATES;
@@ -18,6 +22,8 @@ export type GearboxTemplates = {
   gearboxLookupFound?: string | null;
   gearboxLookupModelOnly?: string | null;
   gearboxTagRequest?: string | null;
+  gearboxLookupFallback?: string | null;
+  gearboxNoVin?: string | null;
 };
 
 /** Raw tenant.templates from DB (may be null or partial). */
@@ -29,8 +35,12 @@ function getTenantTemplatesRaw(tenant: { templates?: unknown } | null | undefine
   return t as GearboxTemplates;
 }
 
+export type MergedGearboxTemplates = {
+  [K in keyof typeof DEFAULT_GEARBOX_TEMPLATES]: string;
+};
+
 /** Merged templates: tenant overrides + defaults. Never null; missing keys use defaults. */
-export function getMergedGearboxTemplates(tenant: { templates?: unknown } | null | undefined): typeof DEFAULT_GEARBOX_TEMPLATES {
+export function getMergedGearboxTemplates(tenant: { templates?: unknown } | null | undefined): MergedGearboxTemplates {
   const raw = getTenantTemplatesRaw(tenant);
   return {
     gearboxLookupFound: (raw?.gearboxLookupFound != null && raw.gearboxLookupFound !== "")
@@ -42,18 +52,37 @@ export function getMergedGearboxTemplates(tenant: { templates?: unknown } | null
     gearboxTagRequest: (raw?.gearboxTagRequest != null && raw.gearboxTagRequest !== "")
       ? raw.gearboxTagRequest
       : DEFAULT_GEARBOX_TEMPLATES.gearboxTagRequest,
+    gearboxLookupFallback: (raw?.gearboxLookupFallback != null && raw.gearboxLookupFallback !== "")
+      ? raw.gearboxLookupFallback
+      : DEFAULT_GEARBOX_TEMPLATES.gearboxLookupFallback,
+    gearboxNoVin: (raw?.gearboxNoVin != null && raw.gearboxNoVin !== "")
+      ? raw.gearboxNoVin
+      : DEFAULT_GEARBOX_TEMPLATES.gearboxNoVin,
   };
 }
 
-export type FillParams = { oem?: string | null; model?: string | null; source?: string | null };
+export type FillParams = {
+  oem?: string | null;
+  model?: string | null;
+  source?: string | null;
+  factoryCode?: string | null;
+  gearboxType?: string | null;
+  make?: string | null;
+};
 
-/** Replace {{oem}}, {{model}}, {{source}} in template. Null/undefined -> empty string. */
+/** Replace {{oem}}, {{model}}, {{source}}, {{factoryCode}}, {{gearboxType}}, {{make}} in template. Null/undefined -> empty string. */
 export function fillGearboxTemplate(template: string, params: FillParams): string {
   const oem = params.oem ?? "";
   const model = params.model ?? "";
   const source = params.source ?? "";
+  const factoryCode = params.factoryCode ?? "";
+  const gearboxType = params.gearboxType ?? "";
+  const make = params.make ?? "";
   return template
     .replace(/\{\{oem\}\}/g, oem)
     .replace(/\{\{model\}\}/g, model)
-    .replace(/\{\{source\}\}/g, source);
+    .replace(/\{\{source\}\}/g, source)
+    .replace(/\{\{factoryCode\}\}/g, factoryCode)
+    .replace(/\{\{gearboxType\}\}/g, gearboxType)
+    .replace(/\{\{make\}\}/g, make);
 }

@@ -6,7 +6,7 @@ import {
   responseTemplates, decisionSettings, humanDelaySettings, onboardingState, readinessReports, ragDocuments, ragChunks, csatRatings, conversions, lostDeals,
   updateHistory,
   vehicleLookupCache, vehicleLookupCases,
-  priceSnapshots,
+  priceSnapshots, internalPrices,
   telegramSessions,
 } from "@shared/schema";
 import {
@@ -46,6 +46,7 @@ import {
   type VehicleLookupCache, type InsertVehicleLookupCache,
   type VehicleLookupCase, type InsertVehicleLookupCase,
   type PriceSnapshot, type InsertPriceSnapshot,
+  type InternalPrice, type InsertInternalPrice,
   type TelegramSession, type InsertTelegramSession,
 } from "@shared/schema";
 import type { IStorage } from "./storage";
@@ -58,7 +59,7 @@ export class DatabaseStorage implements IStorage {
     return tenant;
   }
 
-  async getTenantTemplates(tenantId: string): Promise<{ gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string }> {
+  async getTenantTemplates(tenantId: string): Promise<{ gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string; gearboxLookupFallback: string; gearboxNoVin: string }> {
     const { getMergedGearboxTemplates } = await import("./services/gearbox-templates");
     const tenant = await this.getTenant(tenantId);
     return getMergedGearboxTemplates(tenant ?? undefined);
@@ -1283,22 +1284,62 @@ export class DatabaseStorage implements IStorage {
   // Price Snapshots
 
   async createPriceSnapshot(data: InsertPriceSnapshot): Promise<PriceSnapshot> {
-    const [row] = await db.insert(priceSnapshots).values(data).returning();
+    const values = {
+      ...data,
+      searchKey: data.searchKey ?? data.oem,
+    };
+    const [row] = await db.insert(priceSnapshots).values(values).returning();
     return row;
   }
 
-  async getLatestPriceSnapshot(tenantId: string, oem: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined> {
+  async getLatestPriceSnapshot(tenantId: string, searchKey: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined> {
     const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
     const [row] = await db.select()
       .from(priceSnapshots)
       .where(and(
         eq(priceSnapshots.tenantId, tenantId),
-        eq(priceSnapshots.oem, oem),
+        or(
+          eq(priceSnapshots.searchKey, searchKey),
+          eq(priceSnapshots.oem, searchKey),
+        ),
         gte(priceSnapshots.createdAt, cutoff)
       ))
       .orderBy(desc(priceSnapshots.createdAt))
       .limit(1);
     return row;
+  }
+
+  async getPriceSnapshotsByOem(tenantId: string, oem: string, limit = 50): Promise<PriceSnapshot[]> {
+    return db.select()
+      .from(priceSnapshots)
+      .where(and(
+        eq(priceSnapshots.tenantId, tenantId),
+        eq(priceSnapshots.oem, oem)
+      ))
+      .orderBy(desc(priceSnapshots.createdAt))
+      .limit(limit);
+  }
+
+  // Internal Prices
+
+  async upsertInternalPrice(data: InsertInternalPrice): Promise<InternalPrice> {
+    const [row] = await db.insert(internalPrices)
+      .values(data)
+      .onConflictDoUpdate({
+        target: [internalPrices.tenantId, internalPrices.oem, internalPrices.condition, internalPrices.supplier],
+        set: { price: data.price, currency: data.currency ?? "RUB", updatedAt: new Date() },
+      })
+      .returning();
+    return row;
+  }
+
+  async getInternalPricesByOem(tenantId: string, oem: string): Promise<InternalPrice[]> {
+    return db.select()
+      .from(internalPrices)
+      .where(and(
+        eq(internalPrices.tenantId, tenantId),
+        eq(internalPrices.oem, oem)
+      ));
   }
 
   // Telegram Accounts (multi-account sessions)

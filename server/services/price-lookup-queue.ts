@@ -1,10 +1,20 @@
 import { Queue } from "bullmq";
 import { getRedisConnectionConfig } from "./message-queue";
+import type { GearboxType } from "./price-sources/types";
+
+export interface SearchFallback {
+  make: string | null;
+  model: string | null;
+  gearboxType: GearboxType;
+  gearboxModel: string | null;
+}
 
 export interface PriceLookupJobData {
   tenantId: string;
   conversationId: string;
-  oem: string;
+  oem: string | null;
+  searchFallback?: SearchFallback;
+  isModelOnly?: boolean;
 }
 
 const QUEUE_NAME = "price_lookup_queue";
@@ -53,7 +63,8 @@ export async function enqueuePriceLookup(data: PriceLookupJobData): Promise<{ jo
       attempts: 3,
       removeOnComplete: true,
     });
-    console.log("[PriceLookupQueue] Job enqueued:", job.id, "conversationId:", data.conversationId, "OEM:", data.oem);
+    const searchLabel = data.oem ?? `fallback:${data.searchFallback?.make}_${data.searchFallback?.model}_${data.searchFallback?.gearboxType}`;
+    console.log("[PriceLookupQueue] Job enqueued:", job.id, "conversationId:", data.conversationId, "search:", searchLabel);
     return { jobId: job.id ?? "" };
   } catch (error) {
     console.error("[PriceLookupQueue] Failed to enqueue job:", error);

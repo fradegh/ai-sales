@@ -1324,17 +1324,25 @@ export const priceSnapshots = pgTable(
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
     oem: text("oem").notNull(),
-    source: text("source").notNull(), // "mock", later "avito", "exist", etc.
+    source: text("source").notNull(), // "internal", "avito", "drom", "web", "mock"
     currency: text("currency").notNull().default("RUB"),
     minPrice: integer("min_price"),
     maxPrice: integer("max_price"),
     avgPrice: integer("avg_price"),
+    marketMinPrice: integer("market_min_price"),
+    marketMaxPrice: integer("market_max_price"),
+    marketAvgPrice: integer("market_avg_price"),
+    salePrice: integer("sale_price"),
+    marginPct: integer("margin_pct").default(0),
+    priceNote: text("price_note"),
+    searchKey: text("search_key"),
     raw: jsonb("raw").default({}),
     createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   },
   (table) => [
     index("price_snapshots_tenant_oem_created_idx").on(table.tenantId, table.oem, table.createdAt),
     index("price_snapshots_oem_created_idx").on(table.oem, table.createdAt),
+    index("price_snapshots_search_key_idx").on(table.tenantId, table.searchKey),
   ]
 );
 
@@ -1344,4 +1352,32 @@ export type InsertPriceSnapshot = typeof priceSnapshots.$inferInsert;
 export const insertPriceSnapshotSchema = createInsertSchema(priceSnapshots).omit({
   id: true,
   createdAt: true,
+});
+
+// Internal Prices (tenant's own price list per OEM)
+export const internalPrices = pgTable(
+  "internal_prices",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+    oem: text("oem").notNull(),
+    price: integer("price").notNull(),
+    currency: text("currency").notNull().default("RUB"),
+    condition: text("condition"), // "used", "new", "contract", etc.
+    supplier: text("supplier"),
+    updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  },
+  (table) => [
+    uniqueIndex("internal_prices_tenant_oem_condition_supplier_idx")
+      .on(table.tenantId, table.oem, table.condition, table.supplier),
+    index("internal_prices_tenant_oem_idx").on(table.tenantId, table.oem),
+  ]
+);
+
+export type InternalPrice = typeof internalPrices.$inferSelect;
+export type InsertInternalPrice = typeof internalPrices.$inferInsert;
+
+export const insertInternalPriceSchema = createInsertSchema(internalPrices).omit({
+  id: true,
+  updatedAt: true,
 });
