@@ -47,24 +47,34 @@ const PREFER_KEYWORDS = [
   "kontraktnaya",
 ];
 
+// Strip parenthetical suffix from gearbox codes: "DES(5A)" → "DES", "01M(ABC)" → "01M"
+function stripParenthetical(code: string): string {
+  const idx = code.indexOf("(");
+  return idx !== -1 ? code.slice(0, idx).trim() : code.trim();
+}
+
 function buildPrimaryQuery(
   oem: string,
   modelName: string | null,
-  origin: Origin
+  origin: Origin,
+  make?: string | null
 ): string {
-  const namePart = modelName ? `${oem} ${modelName}` : oem;
+  const gearboxCode = stripParenthetical(modelName ?? oem);
+  const makePart = make ? `${make} ` : "";
   switch (origin) {
     case "japan":
-      return `контрактная коробка передач ${namePart} из Японии цена`;
+      return `АКПП ${makePart}${gearboxCode} контрактная б/у из Японии`;
     case "europe":
-      return `контрактная коробка передач ${namePart} из Европы цена`;
+      return `АКПП ${makePart}${gearboxCode} контрактная б/у из Европы`;
     default:
-      return `контрактная коробка передач ${namePart} б/у цена`;
+      return `АКПП ${makePart}${gearboxCode} контрактная б/у`;
   }
 }
 
-function buildFallbackQuery(oem: string, modelName: string | null): string {
-  return `КПП ${modelName ?? oem} контрактная б/у с разборки цена рублей`;
+function buildFallbackQuery(oem: string, modelName: string | null, make?: string | null): string {
+  const gearboxCode = stripParenthetical(modelName ?? oem);
+  const makePart = make ? `${make} ` : "";
+  return `контрактная АКПП ${makePart}${gearboxCode} цена купить`;
 }
 
 function isExcluded(text: string): boolean {
@@ -174,10 +184,11 @@ function parseListingsFromResponse(content: string): ParsedListing[] {
 export async function searchUsedTransmissionPrice(
   oem: string,
   modelName: string | null,
-  origin: Origin
+  origin: Origin,
+  make?: string | null
 ): Promise<PriceSearchResult> {
-  const primaryQuery = buildPrimaryQuery(oem, modelName, origin);
-  const fallbackQuery = buildFallbackQuery(oem, modelName);
+  const primaryQuery = buildPrimaryQuery(oem, modelName, origin, make);
+  const fallbackQuery = buildFallbackQuery(oem, modelName, make);
 
   const notFoundResult: PriceSearchResult = {
     minPrice: 0,
@@ -210,15 +221,7 @@ export async function searchUsedTransmissionPrice(
       });
 
       const content: string = response.output_text ?? "";
-
-      // DEBUG — remove after diagnosis
-      console.log("[PriceSearcher] RAW response output_text:", content?.substring(0, 500));
-      console.log("[PriceSearcher] RAW response output:", JSON.stringify(response.output?.slice(0, 2)));
-      console.log("[PriceSearcher] parseListings input length:", content.length);
-
-      const listings = parseListingsFromResponse(content);
-      console.log("[PriceSearcher] parseListings result:", JSON.stringify(listings.slice(0, 3)));
-      return listings;
+      return parseListingsFromResponse(content);
     } catch (err: any) {
       console.warn(`[PriceSearcher] OpenAI web search failed: ${err.message}`);
       return [];

@@ -350,7 +350,8 @@ async function lookupPricesByOem(
   const priceData = await searchUsedTransmissionPrice(
     oem,
     identification.modelName,
-    identification.origin
+    identification.origin,
+    identification.manufacturer
   );
 
   // Do NOT save mock results — only save real search results (including not_found)
@@ -514,7 +515,7 @@ async function lookupPricesByFallback(
     const webSearchModel = searchFallback.gearboxModel ?? null;
     console.log(`[PriceLookupWorker] Fallback: trying OpenAI web search for "${webSearchOem}"`);
     try {
-      const webResult = await searchUsedTransmissionPrice(webSearchOem, webSearchModel, "unknown");
+      const webResult = await searchUsedTransmissionPrice(webSearchOem, webSearchModel, "unknown", searchFallback.make);
       if (webResult.source === "openai_web_search") {
         console.log(
           `[PriceLookupWorker] Fallback: OpenAI web search returned ${webResult.listingsCount} listings ` +
