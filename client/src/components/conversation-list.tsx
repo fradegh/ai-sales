@@ -156,7 +156,7 @@ export function ConversationList({
                     <span className="truncate text-sm font-medium">
                       {conversation.customer?.name || "Неизвестный клиент"}
                     </span>
-                    <span className="shrink-0 text-xs text-muted-foreground pr-4">
+                    <span className="shrink-0 text-xs text-muted-foreground">
                       {conversation.lastMessageAt &&
                         formatDistanceToNow(new Date(conversation.lastMessageAt), {
                           addSuffix: false,
@@ -183,7 +183,7 @@ export function ConversationList({
                 </div>
                 {onDelete && (
                   <button
-                    className="absolute top-1 right-1 p-1 rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/50 transition-colors"
+                    className="absolute top-1 right-1 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors"
                     onClick={(e) => {
                       e.stopPropagation();
                       setDeleteTargetId(conversation.id);
