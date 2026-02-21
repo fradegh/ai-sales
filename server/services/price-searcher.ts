@@ -198,28 +198,25 @@ export async function searchUsedTransmissionPrice(
   const runSearch = async (query: string): Promise<ParsedListing[]> => {
     console.log(`[PriceSearcher] Web search query: "${query}"`);
     try {
-      const response = await openai.chat.completions.create({
+      const response = await (openai as any).responses.create({
         model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "Ты помощник по поиску цен на контрактные коробки передач. " +
-              "Найди актуальные цены на б/у КПП на avito.ru, drom.ru, autopiter.ru, exist.ru и других сайтах. " +
-              "Верни данные в JSON-массиве: [{title, price (число в рублях), mileage (число км или null), url, site, isUsed}]. " +
-              "ИСКЛЮЧАЙ новые и восстановленные коробки. " +
-              "ВКЛЮЧАЙ только б/у, контрактные, с разборки.",
-          },
-          {
-            role: "user",
-            content: query,
-          },
-        ],
-        // @ts-expect-error — web_search_preview is a preview tool not yet in typedefs
         tools: [{ type: "web_search_preview" }],
-      } as any);
+        instructions:
+          "Ты помощник по поиску цен на контрактные коробки передач. " +
+          "Найди актуальные цены на б/у КПП на avito.ru, drom.ru, autopiter.ru, exist.ru и других сайтах. " +
+          "Верни данные в JSON-массиве: [{title, price (число в рублях), mileage (число км или null), url, site, isUsed}]. " +
+          "ИСКЛЮЧАЙ новые и восстановленные коробки. " +
+          "ВКЛЮЧАЙ только б/у, контрактные, с разборки.",
+        input: query,
+      });
 
-      const content = response.choices[0]?.message?.content ?? "";
+      const content: string = (response.output as any[])
+        .filter((item: any) => item.type === "message")
+        .flatMap((item: any) => item.content as any[])
+        .filter((c: any) => c.type === "output_text")
+        .map((c: any) => c.text as string)
+        .join("\n");
+
       return parseListingsFromResponse(content);
     } catch (err: any) {
       console.warn(`[PriceSearcher] OpenAI web search failed: ${err.message}`);
