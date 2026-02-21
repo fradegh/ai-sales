@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Bot, Loader2, Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { apiRequest } from "@/lib/queryClient";
 
 interface AuthResponse {
   message?: string;
@@ -16,18 +17,8 @@ interface AuthResponse {
 }
 
 async function authRequest(endpoint: string, data: Record<string, string>): Promise<AuthResponse> {
-  const res = await fetch(`/auth${endpoint}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-    credentials: "include",
-  });
-  
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error || json.message || "Произошла ошибка");
-  }
-  return json;
+  const res = await apiRequest("POST", `/auth${endpoint}`, data);
+  return res.json();
 }
 
 function AuthLayout({ children }: { children: React.ReactNode }) {

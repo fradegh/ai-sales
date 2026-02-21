@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { apiRequest } from "@/lib/queryClient";
 
 interface AuthUser {
   id: string;
@@ -32,10 +33,7 @@ async function fetchUser(): Promise<AuthUser | null> {
 }
 
 async function logout(): Promise<void> {
-  const response = await fetch("/auth/logout", { method: "POST", credentials: "include" });
-  if (!response.ok) {
-    throw new Error(`Logout failed: ${response.status}`);
-  }
+  await apiRequest("POST", "/auth/logout");
 }
 
 export function useAuth() {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,32 +21,22 @@ interface AuthUser {
 }
 
 async function ownerLogin(email: string, password: string): Promise<AuthUser> {
-  const loginRes = await fetch("/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-    credentials: "include",
-  });
-  
+  const loginRes = await apiRequest("POST", "/auth/login", { email, password });
   const loginJson = await loginRes.json();
-  if (!loginRes.ok) {
+  if (!loginJson.success) {
     throw new Error(loginJson.error || loginJson.message || "Ошибка входа");
   }
-  
-  const meRes = await fetch("/api/auth/user", {
-    credentials: "include",
-  });
-  
+
+  const meRes = await fetch("/api/auth/user", { credentials: "include" });
   if (!meRes.ok) {
     throw new Error("Не удалось получить данные пользователя");
   }
-  
-  const user = await meRes.json();
-  return user;
+
+  return meRes.json();
 }
 
 async function logout(): Promise<void> {
-  await fetch("/auth/logout", { method: "POST", credentials: "include" });
+  await apiRequest("POST", "/auth/logout");
 }
 
 export default function OwnerLoginPage() {
