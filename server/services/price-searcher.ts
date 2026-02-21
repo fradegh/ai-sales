@@ -211,7 +211,14 @@ export async function searchUsedTransmissionPrice(
 
       const content: string = response.output_text ?? "";
 
-      return parseListingsFromResponse(content);
+      // DEBUG — remove after diagnosis
+      console.log("[PriceSearcher] RAW response output_text:", content?.substring(0, 500));
+      console.log("[PriceSearcher] RAW response output:", JSON.stringify(response.output?.slice(0, 2)));
+      console.log("[PriceSearcher] parseListings input length:", content.length);
+
+      const listings = parseListingsFromResponse(content);
+      console.log("[PriceSearcher] parseListings result:", JSON.stringify(listings.slice(0, 3)));
+      return listings;
     } catch (err: any) {
       console.warn(`[PriceSearcher] OpenAI web search failed: ${err.message}`);
       return [];
