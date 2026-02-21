@@ -1,11 +1,17 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "npm-9_x"]
+nixPkgs = ["python311", "python311Packages.pip"]
 
 [phases.install]
-cmds = ["npm install"]
+cmds = [
+  "npm ci",
+  "pip install fastapi uvicorn playwright pydantic aiohttp httpx requests pillow qrcode",
+  "python3 -m playwright install chromium --with-deps"
+]
 
 [phases.build]
-cmds = ["npm run build"]
+cmds = [
+  "npm run build"
+]
 
 [start]
 cmd = "npm run db:migrate && npm run start"
