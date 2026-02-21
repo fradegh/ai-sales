@@ -156,7 +156,7 @@ export function ConversationList({
                     <span className="truncate text-sm font-medium">
                       {conversation.customer?.name || "Неизвестный клиент"}
                     </span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
+                    <span className="shrink-0 text-xs text-muted-foreground pr-4">
                       {conversation.lastMessageAt &&
                         formatDistanceToNow(new Date(conversation.lastMessageAt), {
                           addSuffix: false,
@@ -183,7 +183,7 @@ export function ConversationList({
                 </div>
                 {onDelete && (
                   <button
-                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
+                    className="absolute top-1 right-1 p-1 rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground/50 transition-colors"
                     onClick={(e) => {
                       e.stopPropagation();
                       setDeleteTargetId(conversation.id);
@@ -191,7 +191,7 @@ export function ConversationList({
                     data-testid={`delete-conversation-${conversation.id}`}
                     aria-label="Удалить диалог"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 )}
               </div>
