@@ -31,7 +31,7 @@ export function getRateLimiterRedis(): Redis | null {
   if (!url) return null;
 
   client = new Redis(url, {
-    enableOfflineQueue: false,
+    enableOfflineQueue: true,  // allow queuing commands before connection is ready (prevents startup crash with rate-limit-redis RedisStore)
     maxRetriesPerRequest: 1,
     lazyConnect: false,
   });
