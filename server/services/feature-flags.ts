@@ -1,7 +1,7 @@
 import type { FeatureFlag, InsertFeatureFlag, FeatureFlagName } from "@shared/schema";
 import { featureFlags } from "@shared/schema";
 import { db } from "../db";
-import { sql } from "drizzle-orm";
+import { sql, eq, and, isNull } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
 const DEFAULT_FLAGS: Record<FeatureFlagName, { description: string; enabled: boolean }> = {
@@ -114,10 +114,27 @@ class FeatureFlagService {
    * Load persisted flags from the DB and merge them into the in-memory cache,
    * overwriting defaults with stored values.  Should be awaited at server
    * startup before requests are served.
+   *
+   * Also seeds global defaults into the DB so tenant-specific overrides have a
+   * baseline row and the table is never empty after first boot.
    */
   async initFromDb(): Promise<void> {
     try {
       await this.ensureSchema();
+
+      // Seed global defaults to DB (upsert — do not overwrite existing values)
+      for (const flag of this.flags.values()) {
+        if (flag.tenantId === null) {
+          await db.execute(sql`
+            INSERT INTO feature_flags (id, name, description, enabled, tenant_id, created_at, updated_at)
+            VALUES (${flag.id}, ${flag.name}, ${flag.description}, ${flag.enabled}, NULL, NOW(), NOW())
+            ON CONFLICT (name) WHERE tenant_id IS NULL
+            DO NOTHING
+          `);
+        }
+      }
+
+      // Load all rows (global + tenant overrides) into memory
       const rows = await db.select().from(featureFlags);
       for (const row of rows) {
         this.flags.set(this.getKey(row.name, row.tenantId), {
@@ -172,8 +189,27 @@ class FeatureFlagService {
   // Public API
   // ---------------------------------------------------------------------------
 
+  /**
+   * Check whether a flag is enabled.  For tenant-specific calls the DB is
+   * queried directly so that overrides set on another process/pod are always
+   * visible without a restart.  The in-memory cache is used only for the
+   * global (non-tenant) fallback.
+   */
   async isEnabled(name: FeatureFlagName, tenantId?: string): Promise<boolean> {
-    return this.isEnabledSync(name, tenantId);
+    if (tenantId) {
+      try {
+        const [override] = await db
+          .select()
+          .from(featureFlags)
+          .where(and(eq(featureFlags.name, name), eq(featureFlags.tenantId, tenantId)))
+          .limit(1);
+        if (override) return override.enabled;
+      } catch (err) {
+        console.error("[FeatureFlags] DB query failed, falling back to cache:", err);
+      }
+    }
+    // Fall back to in-memory global default (seeded at startup)
+    return this.flags.get(this.getKey(name, null))?.enabled ?? false;
   }
 
   isEnabledSync(name: string, tenantId?: string): boolean {
@@ -187,32 +223,66 @@ class FeatureFlagService {
 
   async getFlag(name: string, tenantId?: string | null): Promise<FeatureFlag | undefined> {
     if (tenantId) {
-      const tenantFlag = this.flags.get(this.getKey(name, tenantId));
-      if (tenantFlag) return tenantFlag;
+      try {
+        const [override] = await db
+          .select()
+          .from(featureFlags)
+          .where(and(eq(featureFlags.name, name), eq(featureFlags.tenantId, tenantId)))
+          .limit(1);
+        if (override) return { ...override, createdAt: new Date(override.createdAt), updatedAt: new Date(override.updatedAt) };
+      } catch (err) {
+        console.error("[FeatureFlags] DB query failed, falling back to cache:", err);
+      }
     }
+    // Fall back to global in-memory entry
     return this.flags.get(this.getKey(name, null));
   }
 
   async getAllFlags(tenantId?: string): Promise<FeatureFlag[]> {
-    const result: FeatureFlag[] = [];
-    const seenNames = new Set<string>();
+    try {
+      // Load all global flags plus tenant-specific overrides from DB
+      const globalRows = await db
+        .select()
+        .from(featureFlags)
+        .where(isNull(featureFlags.tenantId));
 
-    if (tenantId) {
-      for (const flag of this.flags.values()) {
-        if (flag.tenantId === tenantId) {
-          result.push(flag);
-          seenNames.add(flag.name);
+      const seenNames = new Set<string>();
+      const result: FeatureFlag[] = [];
+
+      if (tenantId) {
+        const tenantRows = await db
+          .select()
+          .from(featureFlags)
+          .where(and(eq(featureFlags.tenantId, tenantId)));
+
+        for (const row of tenantRows) {
+          result.push({ ...row, createdAt: new Date(row.createdAt), updatedAt: new Date(row.updatedAt) });
+          seenNames.add(row.name);
         }
       }
-    }
 
-    for (const flag of this.flags.values()) {
-      if (flag.tenantId === null && !seenNames.has(flag.name)) {
-        result.push(flag);
+      for (const row of globalRows) {
+        if (!seenNames.has(row.name)) {
+          result.push({ ...row, createdAt: new Date(row.createdAt), updatedAt: new Date(row.updatedAt) });
+        }
       }
-    }
 
-    return result;
+      return result;
+    } catch (err) {
+      console.error("[FeatureFlags] DB query failed, falling back to cache:", err);
+      // Fallback: serve from in-memory cache
+      const result: FeatureFlag[] = [];
+      const seenNames = new Set<string>();
+      if (tenantId) {
+        for (const flag of this.flags.values()) {
+          if (flag.tenantId === tenantId) { result.push(flag); seenNames.add(flag.name); }
+        }
+      }
+      for (const flag of this.flags.values()) {
+        if (flag.tenantId === null && !seenNames.has(flag.name)) result.push(flag);
+      }
+      return result;
+    }
   }
 
   async setFlag(name: string, enabled: boolean, tenantId?: string | null): Promise<FeatureFlag> {
