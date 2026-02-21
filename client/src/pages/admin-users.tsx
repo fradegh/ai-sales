@@ -14,10 +14,11 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { 
   Shield, Loader2, ArrowLeft, Search, UserX, UserCheck, 
   Calendar, Clock, Mail, Building2, Crown, Ban, Eye, 
-  CreditCard, History, LogIn, Plus
+  CreditCard, History, LogIn, Plus, Wrench
 } from "lucide-react";
 
 interface UserListItem {
@@ -55,6 +56,13 @@ interface AuditLogEntry {
   reason: string | null;
   createdAt: string;
   metadata: Record<string, unknown> | null;
+}
+
+interface FeatureFlag {
+  id: string;
+  name: string;
+  enabled: boolean;
+  tenantId: string | null;
 }
 
 export default function AdminUsers() {
@@ -162,6 +170,37 @@ export default function AdminUsers() {
       setSubscriptionDialog(false);
       setGrantDuration("30");
       setActionReason("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Ошибка", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const tenantId = selectedUser?.tenantId ?? null;
+
+  const { data: tenantFlags, isLoading: flagsLoading } = useQuery<FeatureFlag[]>({
+    queryKey: ["/api/admin/feature-flags/tenant", tenantId],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/feature-flags/tenant/${tenantId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch feature flags");
+      return res.json();
+    },
+    enabled: !!tenantId,
+  });
+
+  const autoPartsFlag = tenantFlags?.find((f) => f.name === "AUTO_PARTS_ENABLED");
+
+  const toggleFlagMutation = useMutation({
+    mutationFn: async ({ enabled }: { enabled: boolean }) => {
+      const res = await apiRequest("POST", "/api/admin/feature-flags/AUTO_PARTS_ENABLED/toggle", {
+        enabled,
+        tenantId,
+      });
+      return res.json();
+    },
+    onSuccess: (_data, { enabled }) => {
+      toast({ title: enabled ? "Автозапчасти включены" : "Автозапчасти отключены" });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/feature-flags/tenant", tenantId] });
     },
     onError: (error: Error) => {
       toast({ title: "Ошибка", description: error.message, variant: "destructive" });
@@ -506,6 +545,38 @@ export default function AdminUsers() {
                           <Plus className="h-4 w-4 mr-2" />
                           Продлить подписку
                         </Button>
+
+                        {selectedUser.tenantId && (
+                          <Card>
+                            <CardHeader className="pb-2">
+                              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                                <Wrench className="h-4 w-4" />
+                                Функции
+                              </CardTitle>
+                              <CardDescription>Дополнительные модули для тенанта</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                              <div className="flex items-center justify-between gap-4">
+                                <div className="space-y-0.5">
+                                  <p className="text-sm font-medium">Автозапчасти</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Включить модуль подбора запчастей по VIN
+                                  </p>
+                                </div>
+                                {flagsLoading ? (
+                                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                ) : (
+                                  <Switch
+                                    checked={autoPartsFlag?.enabled ?? false}
+                                    onCheckedChange={(enabled) => toggleFlagMutation.mutate({ enabled })}
+                                    disabled={toggleFlagMutation.isPending}
+                                    data-testid="switch-auto-parts-enabled"
+                                  />
+                                )}
+                              </div>
+                            </CardContent>
+                          </Card>
+                        )}
                       </div>
                     </TabsContent>
 
