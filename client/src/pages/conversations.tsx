@@ -6,13 +6,20 @@ import { CustomerCard } from "@/components/customer-card";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { User, ArrowLeft } from "lucide-react";
+import { User, ArrowLeft, MessageSquarePlus } from "lucide-react";
 import type { ConversationWithCustomer, ConversationDetail } from "@shared/schema";
 
 export default function Conversations() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileShowChat, setMobileShowChat] = useState(false);
+  const [testDialogOpen, setTestDialogOpen] = useState(false);
+  const [testName, setTestName] = useState("");
+  const [testPhone, setTestPhone] = useState("");
+  const [testMessage, setTestMessage] = useState("");
   const { toast } = useToast();
 
   const handleSelectConversation = async (id: string) => {
@@ -136,17 +143,112 @@ export default function Conversations() {
     startPhoneConversationMutation.mutate(phoneNumber);
   };
 
+  const simulateMessageMutation = useMutation({
+    mutationFn: async (data: { customerName: string; customerPhone: string; message: string }) => {
+      const res = await apiRequest("POST", "/api/test/simulate-message", data);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Ошибка создания диалога");
+      return json;
+    },
+    onSuccess: (data: { conversation?: { id?: string } }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      setTestDialogOpen(false);
+      setTestName("");
+      setTestPhone("");
+      setTestMessage("");
+      toast({ title: "Тестовый диалог создан" });
+      if (data.conversation?.id) {
+        setSelectedId(data.conversation.id);
+        setMobileShowChat(true);
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Не удалось создать диалог", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleSimulateSubmit = () => {
+    if (!testName.trim() || !testPhone.trim() || !testMessage.trim()) {
+      toast({ title: "Заполните все поля", variant: "destructive" });
+      return;
+    }
+    simulateMessageMutation.mutate({
+      customerName: testName.trim(),
+      customerPhone: testPhone.trim(),
+      message: testMessage.trim(),
+    });
+  };
+
   return (
     <div className="flex h-full">
       {/* Conversation List - hidden on mobile when chat is open */}
-      <div className={`w-full md:w-80 shrink-0 border-r ${mobileShowChat ? 'hidden md:block' : 'block'}`}>
+      <div className={`w-full md:w-80 shrink-0 border-r flex flex-col ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
         <ConversationList
           conversations={conversations || []}
           selectedId={selectedId || undefined}
           onSelect={handleSelectConversation}
           isLoading={conversationsLoading}
         />
+        {!conversationsLoading && conversations?.length === 0 && (
+          <div className="flex flex-col items-center gap-2 p-4 border-t">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full gap-2"
+              onClick={() => setTestDialogOpen(true)}
+            >
+              <MessageSquarePlus className="h-4 w-4" />
+              Создать тестовый диалог
+            </Button>
+          </div>
+        )}
       </div>
+
+      {/* Test Dialog */}
+      <Dialog open={testDialogOpen} onOpenChange={setTestDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Создать тестовый диалог</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="test-name">Имя клиента</Label>
+              <Input
+                id="test-name"
+                placeholder="Тест Иванов"
+                value={testName}
+                onChange={(e) => setTestName(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="test-phone">Телефон</Label>
+              <Input
+                id="test-phone"
+                placeholder="+79001234567"
+                value={testPhone}
+                onChange={(e) => setTestPhone(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="test-message">Сообщение</Label>
+              <Input
+                id="test-message"
+                placeholder="WVWZZZ7MZ6V025007"
+                value={testMessage}
+                onChange={(e) => setTestMessage(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTestDialogOpen(false)}>
+              Отмена
+            </Button>
+            <Button onClick={handleSimulateSubmit} disabled={simulateMessageMutation.isPending}>
+              {simulateMessageMutation.isPending ? "Создание..." : "Создать"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       
       {/* Chat Area - hidden on mobile when list is shown */}
       <div className={`flex flex-1 overflow-hidden ${mobileShowChat ? 'flex' : 'hidden md:flex'}`}>

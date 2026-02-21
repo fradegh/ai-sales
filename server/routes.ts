@@ -1523,6 +1523,67 @@ export async function registerRoutes(
     }
   });
 
+  // ============ TEST / DEBUG ROUTES ============
+  // Available when NODE_ENV !== 'production' OR ENABLE_TEST_ENDPOINTS=true
+
+  if (process.env.NODE_ENV !== "production" || process.env.ENABLE_TEST_ENDPOINTS === "true") {
+    app.post("/api/test/simulate-message", requireAuth, async (req: Request, res: Response) => {
+      try {
+        const user = await storage.getUser(req.userId!);
+        if (!user?.tenantId) {
+          return res.status(403).json({ error: "User not associated with a tenant" });
+        }
+
+        const { customerName, customerPhone, message } = req.body as {
+          customerName?: string;
+          customerPhone?: string;
+          message?: string;
+        };
+
+        if (!customerName || !customerPhone || !message) {
+          return res.status(400).json({ error: "Missing required fields: customerName, customerPhone, message" });
+        }
+
+        const externalUserId = customerPhone.replace(/\D/g, "") || `test_${Date.now()}`;
+
+        const { processIncomingMessageFull } = await import("./services/inbound-message-handler");
+
+        const parsed = {
+          externalMessageId: `test_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+          externalConversationId: externalUserId,
+          externalUserId,
+          text: message,
+          timestamp: new Date(),
+          channel: "mock" as const,
+          metadata: {
+            firstName: customerName,
+            phone: customerPhone,
+          },
+        };
+
+        await processIncomingMessageFull(user.tenantId, parsed);
+
+        const customer = await storage.getCustomerByExternalId(user.tenantId, "mock", externalUserId);
+        if (!customer) {
+          return res.status(500).json({ error: "Customer was not created" });
+        }
+
+        const allConversations = await storage.getConversationsByTenant(user.tenantId);
+        const conv = allConversations.find(
+          (c) => c.customerId === customer.id && (c.status === "active" || c.status === "pending")
+        );
+
+        const conversation = conv ? await storage.getConversationWithCustomer(conv.id) : null;
+
+        console.log(`[TestEndpoint] Simulated message for tenant ${user.tenantId}, customer ${customer.id}`);
+        res.json({ success: true, conversation, customer });
+      } catch (error: any) {
+        console.error("[TestEndpoint] simulate-message error:", error);
+        res.status(500).json({ error: error.message || "Failed to simulate message" });
+      }
+    });
+  }
+
   // ============ WEBHOOK ROUTES ============
 
   app.post("/webhooks/telegram", webhookRateLimiter, telegramWebhookHandler);

@@ -2498,3 +2498,43 @@ Handles subscription payment confirmations.
 | `OWNER_PASSWORD` | Bootstrap owner password (remove after first run) |
 | `OWNER_PASSWORD_HASH` | Alternative: bcrypt hash |
 | `OWNER_NAME` | Owner display name (default: "Platform Owner") |
+
+### Test / Debug Endpoints
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_TEST_ENDPOINTS` | `false` | Enable `POST /api/test/simulate-message` in production. Automatically enabled when `NODE_ENV !== 'production'`. |
+
+---
+
+## Test / Debug Endpoints
+
+> Available when `NODE_ENV !== 'production'` **or** `ENABLE_TEST_ENDPOINTS=true`.
+> Auth required (`requireAuth`). No special permissions needed.
+
+### `POST /api/test/simulate-message`
+
+Simulates an incoming customer message via the mock channel adapter. Creates a real customer + conversation and runs the full inbound pipeline (`processIncomingMessageFull`), including VIN/FRAME detection, vehicle lookup queuing, and AI suggestion generation.
+
+**Request body:**
+```json
+{
+  "customerName": "Тест Иванов",
+  "customerPhone": "+79001234567",
+  "message": "WVWZZZ7MZ6V025007"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "conversation": { /* ConversationWithCustomer */ },
+  "customer": { /* Customer */ }
+}
+```
+
+**Notes:**
+- Uses `channel: "mock"` — no real messenger is involved.
+- `externalUserId` is derived from digits in `customerPhone` (e.g. `79001234567`).
+- If a customer with that phone already exists in the mock channel, the message is added to their existing active conversation.
