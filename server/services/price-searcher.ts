@@ -168,7 +168,7 @@ function parseListingsFromResponse(content: string): ParsedListing[] {
 
 /**
  * Searches for used/contract transmission prices via OpenAI Responses API
- * (gpt-4o-mini-search-preview with web_search_preview tool).
+ * (gpt-4.1 with web_search tool).
  * Returns source: 'not_found' if < 2 valid listings found after filtering.
  */
 export async function searchUsedTransmissionPrice(
@@ -204,17 +204,12 @@ export async function searchUsedTransmissionPrice(
       "ИСКЛЮЧАЙ новые и восстановленные коробки. ВКЛЮЧАЙ только б/у, контрактные, с разборки.";
     try {
       const response = await (openai as any).responses.create({
-        model: "gpt-4o-mini-search-preview",
-        tools: [{ type: "web_search_preview" }],
+        model: "gpt-4.1",
+        tools: [{ type: "web_search" }],
         input,
       });
 
-      const content: string = (response.output as any[])
-        .filter((item: any) => item.type === "message")
-        .flatMap((item: any) => item.content as any[])
-        .filter((c: any) => c.type === "output_text")
-        .map((c: any) => c.text as string)
-        .join("\n");
+      const content: string = response.output_text ?? "";
 
       return parseListingsFromResponse(content);
     } catch (err: any) {
