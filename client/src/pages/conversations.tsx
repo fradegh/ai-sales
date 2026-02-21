@@ -202,7 +202,7 @@ export default function Conversations() {
   };
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       {/* Conversation List - hidden on mobile when chat is open */}
       <div className={`w-full md:w-80 shrink-0 border-r flex flex-col ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
         <ConversationList
@@ -262,7 +262,7 @@ export default function Conversations() {
       </Dialog>
       
       {/* Chat Area - hidden on mobile when list is shown */}
-      <div className={`flex flex-1 overflow-hidden ${mobileShowChat ? 'flex' : 'hidden md:flex'}`}>
+      <div className={`flex flex-1 min-w-0 overflow-hidden ${mobileShowChat ? 'flex' : 'hidden md:flex'}`}>
         <div className="flex-1 overflow-hidden relative flex flex-col">
           {/* Mobile back button */}
           <div className="md:hidden flex items-center gap-2 p-2 border-b shrink-0">
