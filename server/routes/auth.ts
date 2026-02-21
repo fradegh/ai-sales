@@ -3,6 +3,8 @@ import { z } from "zod";
 import { authService } from "../services/auth-service";
 import { requireAuth, requirePermission } from "../middleware/rbac";
 import rateLimit from "express-rate-limit";
+import { RedisStore } from "rate-limit-redis";
+import { getRateLimiterRedisInstance } from "../redis-client";
 import { storage } from "../storage";
 import { db } from "../db";
 import { adminActions } from "@shared/schema";
@@ -35,25 +37,50 @@ const inviteSchema = z.object({
 // ============ RATE LIMITING ============
 
 /**
- * Auth-specific rate limiter.
+ * Auth-specific rate limiters.
  * SECURITY: Strict limits to prevent brute force attacks.
  * - 5 attempts per 15 minutes for login
  * - 3 attempts per hour for signup (prevent spam accounts)
+ *
+ * Uses a Redis-backed store when REDIS_URL is configured so limits are
+ * shared across all worker processes.  Falls back to the default
+ * express-rate-limit in-memory store when Redis is unavailable (dev without
+ * Redis still works transparently).
  */
+/**
+ * Build a RedisStore for express-rate-limit if REDIS_URL is configured.
+ * Returns undefined (memory store fallback) when Redis is not configured.
+ * passOnStoreError: true means Redis errors allow the request through rather
+ * than returning 500, so dev without Redis continues to work transparently.
+ */
+function makeRedisStore(prefix: string): RedisStore | undefined {
+  const redis = getRateLimiterRedisInstance();
+  if (!redis) return undefined;
+  return new RedisStore({
+    prefix,
+    sendCommand: (command: string, ...args: string[]) =>
+      redis.call(command, ...args) as Promise<number>,
+  });
+}
+
 const authRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 5,
   message: { error: "Too many attempts. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
+  passOnStoreError: true,
+  store: makeRedisStore("rl:auth:login:"),
 });
 
 const signupRateLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
+  windowMs: 60 * 60 * 1000,
   max: 3,
   message: { error: "Too many signup attempts. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
+  passOnStoreError: true,
+  store: makeRedisStore("rl:auth:signup:"),
 });
 
 // ============ ROUTES ============

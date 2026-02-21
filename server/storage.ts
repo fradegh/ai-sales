@@ -112,6 +112,7 @@ export interface IStorage {
   // Messages
   getMessage(id: string): Promise<Message | undefined>;
   getMessagesByConversation(conversationId: string): Promise<Message[]>;
+  getMessagesByConversationPaginated(conversationId: string, cursor?: string, limit?: number): Promise<{ messages: Message[]; nextCursor: string | null }>;
   createMessage(message: InsertMessage & { createdAt?: Date }): Promise<Message>;
   updateMessage(id: string, data: Partial<InsertMessage>): Promise<Message | undefined>;
   getMessagesBySuggestionId(suggestionId: string): Promise<Message[]>;

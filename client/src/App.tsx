@@ -1,5 +1,5 @@
 import { Switch, Route, useLocation } from "wouter";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -13,32 +13,45 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, Bot, MessageSquare, Brain, Shield } from "lucide-react";
 import { wsClient } from "@/lib/websocket";
-import Dashboard from "@/pages/dashboard";
-import Conversations from "@/pages/conversations";
-import KnowledgeBase from "@/pages/knowledge-base";
-import Products from "@/pages/products";
-import Escalations from "@/pages/escalations";
-import Settings from "@/pages/settings";
-import CustomerProfile from "@/pages/customer-profile";
-import Onboarding from "@/pages/onboarding";
-import Analytics from "@/pages/analytics";
-import SecurityStatus from "@/pages/security-status";
-import Billing from "@/pages/billing";
-import AdminSecrets from "@/pages/admin-secrets";
-import AdminUsers from "@/pages/admin-users";
-import AdminBilling from "@/pages/admin-billing";
-import AdminProxies from "@/pages/admin-proxies";
-import NotFound from "@/pages/not-found";
-import OwnerLoginPage from "@/pages/owner-login";
-import OwnerDashboard from "@/pages/owner-dashboard";
-import OwnerUpdates from "@/pages/owner-updates";
-import { 
-  LoginPage, 
-  SignupPage, 
-  VerifyEmailPage, 
-  ForgotPasswordPage, 
-  ResetPasswordPage 
-} from "@/pages/auth";
+
+// Route-based code splitting: each page is loaded only when the user navigates to it.
+// This keeps the initial bundle small and defers heavy pages (Settings ~3000 lines,
+// Analytics + recharts chart components) until they are actually needed.
+const Dashboard = lazy(() => import("@/pages/dashboard"));
+const Conversations = lazy(() => import("@/pages/conversations"));
+const KnowledgeBase = lazy(() => import("@/pages/knowledge-base"));
+const Products = lazy(() => import("@/pages/products"));
+const Escalations = lazy(() => import("@/pages/escalations"));
+const Settings = lazy(() => import("@/pages/settings"));
+const CustomerProfile = lazy(() => import("@/pages/customer-profile"));
+const Onboarding = lazy(() => import("@/pages/onboarding"));
+// Analytics is its own chunk so recharts (via ui/chart.tsx) stays out of the main bundle.
+const Analytics = lazy(() => import("@/pages/analytics"));
+const SecurityStatus = lazy(() => import("@/pages/security-status"));
+const Billing = lazy(() => import("@/pages/billing"));
+const AdminSecrets = lazy(() => import("@/pages/admin-secrets"));
+const AdminUsers = lazy(() => import("@/pages/admin-users"));
+const AdminBilling = lazy(() => import("@/pages/admin-billing"));
+const AdminProxies = lazy(() => import("@/pages/admin-proxies"));
+const NotFound = lazy(() => import("@/pages/not-found"));
+const OwnerLoginPage = lazy(() => import("@/pages/owner-login"));
+const OwnerDashboard = lazy(() => import("@/pages/owner-dashboard"));
+const OwnerUpdates = lazy(() => import("@/pages/owner-updates"));
+// Auth pages share one module chunk; each named export is wrapped to satisfy lazy()'s
+// requirement for a module with a default export.
+const LoginPage = lazy(() => import("@/pages/auth").then((m) => ({ default: m.LoginPage })));
+const SignupPage = lazy(() => import("@/pages/auth").then((m) => ({ default: m.SignupPage })));
+const VerifyEmailPage = lazy(() => import("@/pages/auth").then((m) => ({ default: m.VerifyEmailPage })));
+const ForgotPasswordPage = lazy(() => import("@/pages/auth").then((m) => ({ default: m.ForgotPasswordPage })));
+const ResetPasswordPage = lazy(() => import("@/pages/auth").then((m) => ({ default: m.ResetPasswordPage })));
+
+function PageLoader() {
+  return (
+    <div className="flex h-full min-h-[200px] items-center justify-center">
+      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+    </div>
+  );
+}
 
 function AdminGuard({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
@@ -62,33 +75,35 @@ function AdminGuard({ children }: { children: React.ReactNode }) {
 
 function Router() {
   return (
-    <Switch>
-      <Route path="/" component={Dashboard} />
-      <Route path="/conversations" component={Conversations} />
-      <Route path="/customers/:id" component={CustomerProfile} />
-      <Route path="/knowledge-base" component={KnowledgeBase} />
-      <Route path="/products" component={Products} />
-      <Route path="/escalations" component={Escalations} />
-      <Route path="/settings" component={Settings} />
-      <Route path="/onboarding" component={Onboarding} />
-      <Route path="/analytics" component={Analytics} />
-      <Route path="/admin/security">
-        {() => <AdminGuard><SecurityStatus /></AdminGuard>}
-      </Route>
-      <Route path="/admin/billing">
-        {() => <AdminGuard><AdminBilling /></AdminGuard>}
-      </Route>
-      <Route path="/admin/secrets">
-        {() => <AdminGuard><AdminSecrets /></AdminGuard>}
-      </Route>
-      <Route path="/admin/users">
-        {() => <AdminGuard><AdminUsers /></AdminGuard>}
-      </Route>
-      <Route path="/admin/proxies">
-        {() => <AdminGuard><AdminProxies /></AdminGuard>}
-      </Route>
-      <Route component={NotFound} />
-    </Switch>
+    <Suspense fallback={<PageLoader />}>
+      <Switch>
+        <Route path="/" component={Dashboard} />
+        <Route path="/conversations" component={Conversations} />
+        <Route path="/customers/:id" component={CustomerProfile} />
+        <Route path="/knowledge-base" component={KnowledgeBase} />
+        <Route path="/products" component={Products} />
+        <Route path="/escalations" component={Escalations} />
+        <Route path="/settings" component={Settings} />
+        <Route path="/onboarding" component={Onboarding} />
+        <Route path="/analytics" component={Analytics} />
+        <Route path="/admin/security">
+          {() => <AdminGuard><SecurityStatus /></AdminGuard>}
+        </Route>
+        <Route path="/admin/billing">
+          {() => <AdminGuard><AdminBilling /></AdminGuard>}
+        </Route>
+        <Route path="/admin/secrets">
+          {() => <AdminGuard><AdminSecrets /></AdminGuard>}
+        </Route>
+        <Route path="/admin/users">
+          {() => <AdminGuard><AdminUsers /></AdminGuard>}
+        </Route>
+        <Route path="/admin/proxies">
+          {() => <AdminGuard><AdminProxies /></AdminGuard>}
+        </Route>
+        <Route component={NotFound} />
+      </Switch>
+    </Suspense>
   );
 }
 
@@ -241,25 +256,29 @@ function AuthenticatedApp() {
 
 function AuthRouter() {
   return (
-    <Switch>
-      <Route path="/login" component={LoginPage} />
-      <Route path="/signup" component={SignupPage} />
-      <Route path="/verify-email" component={VerifyEmailPage} />
-      <Route path="/forgot-password" component={ForgotPasswordPage} />
-      <Route path="/reset-password" component={ResetPasswordPage} />
-      <Route component={LandingPage} />
-    </Switch>
+    <Suspense fallback={<PageLoader />}>
+      <Switch>
+        <Route path="/login" component={LoginPage} />
+        <Route path="/signup" component={SignupPage} />
+        <Route path="/verify-email" component={VerifyEmailPage} />
+        <Route path="/forgot-password" component={ForgotPasswordPage} />
+        <Route path="/reset-password" component={ResetPasswordPage} />
+        <Route component={LandingPage} />
+      </Switch>
+    </Suspense>
   );
 }
 
 function OwnerRouter() {
   return (
-    <Switch>
-      <Route path="/owner/login" component={OwnerLoginPage} />
-      <Route path="/owner/updates" component={OwnerUpdates} />
-      <Route path="/owner" component={OwnerDashboard} />
-      <Route component={NotFound} />
-    </Switch>
+    <Suspense fallback={<PageLoader />}>
+      <Switch>
+        <Route path="/owner/login" component={OwnerLoginPage} />
+        <Route path="/owner/updates" component={OwnerUpdates} />
+        <Route path="/owner" component={OwnerDashboard} />
+        <Route component={NotFound} />
+      </Switch>
+    </Suspense>
   );
 }
 

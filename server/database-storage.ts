@@ -1,4 +1,4 @@
-import { eq, desc, and, or, ilike, inArray, sql, gte } from "drizzle-orm";
+import { eq, desc, and, or, ilike, inArray, sql, gte, gt } from "drizzle-orm";
 import { db } from "./db";
 import {
   tenants, channels, users, userInvites, emailTokens, customers, customerNotes, customerMemory, conversations, messages,
@@ -489,6 +489,46 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(messages)
       .where(eq(messages.conversationId, conversationId))
       .orderBy(messages.createdAt);
+  }
+
+  async getMessagesByConversationPaginated(
+    conversationId: string,
+    cursor?: string,
+    limit = 50,
+  ): Promise<{ messages: Message[]; nextCursor: string | null }> {
+    const safeLimit = Math.min(Math.max(1, limit), 200);
+
+    let whereClause;
+    if (cursor) {
+      const [cursorMsg] = await db
+        .select({ createdAt: messages.createdAt })
+        .from(messages)
+        .where(eq(messages.id, cursor));
+
+      if (cursorMsg) {
+        whereClause = and(
+          eq(messages.conversationId, conversationId),
+          gt(messages.createdAt, cursorMsg.createdAt),
+        );
+      } else {
+        whereClause = eq(messages.conversationId, conversationId);
+      }
+    } else {
+      whereClause = eq(messages.conversationId, conversationId);
+    }
+
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(whereClause)
+      .orderBy(messages.createdAt, messages.id)
+      .limit(safeLimit + 1);
+
+    const hasMore = rows.length > safeLimit;
+    const page = hasMore ? rows.slice(0, safeLimit) : rows;
+    const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+    return { messages: page, nextCursor };
   }
 
   async createMessage(data: InsertMessage & { createdAt?: Date }): Promise<Message> {

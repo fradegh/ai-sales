@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { requestContextMiddleware } from "./middleware/request-context";
 import { apiRateLimiter } from "./middleware/rate-limiter";
+import { getRateLimiterRedis, closeRateLimiterRedis } from "./redis-client";
 import { registerHealthRoutes } from "./routes/health";
 import { validateConfig, checkRequiredServices } from "./config";
 import { WhatsAppPersonalAdapter } from "./services/whatsapp-personal-adapter";
@@ -11,6 +12,10 @@ import { realtimeService } from "./services/websocket-server";
 import { storage } from "./storage";
 import { telegramClientManager } from "./services/telegram-client-manager";
 import { errorHandler } from "./middleware/error-handler";
+import { pool } from "./db";
+import { closeQueue } from "./services/message-queue";
+import { closeVehicleLookupQueue } from "./services/vehicle-lookup-queue";
+import { closePriceLookupQueue } from "./services/price-lookup-queue";
 import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
@@ -19,6 +24,10 @@ let maxPersonalProcess: ChildProcess | null = null;
 
 // Validate configuration on startup
 const config = validateConfig();
+
+// Eagerly initialise the rate-limiter Redis client so it connects before the
+// first request arrives (non-blocking; falls back to in-memory if unavailable).
+getRateLimiterRedis();
 const serviceCheck = checkRequiredServices();
 if (serviceCheck.warnings.length > 0) {
   console.warn("Configuration warnings:");
@@ -257,15 +266,58 @@ function startMaxPersonalService() {
   }
 }
 
-// Graceful shutdown
-process.on("SIGTERM", () => {
-  if (maxPersonalProcess && !maxPersonalProcess.killed) {
-    maxPersonalProcess.kill();
-  }
-});
+// Graceful shutdown — ordered teardown on SIGTERM / SIGINT
+let isShuttingDown = false;
 
-process.on("SIGINT", () => {
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  log(`Received ${signal}, starting graceful shutdown`, "shutdown");
+
+  // Kill Python subprocess first so it stops producing new work
   if (maxPersonalProcess && !maxPersonalProcess.killed) {
     maxPersonalProcess.kill();
+    log("Max Personal service stopped", "shutdown");
   }
-});
+
+  // Step 1 + 2: Stop accepting new connections; drain in-flight with 5 s timeout
+  await new Promise<void>((resolve) => {
+    const forceClose = setTimeout(() => {
+      log("Drain timeout reached, proceeding", "shutdown");
+      resolve();
+    }, 5_000);
+
+    httpServer.close(() => {
+      clearTimeout(forceClose);
+      log("HTTP server closed", "shutdown");
+      resolve();
+    });
+  });
+
+  // Step 3: Close BullMQ queue connections (queues live in this process)
+  await Promise.allSettled([
+    closeQueue(),
+    closeVehicleLookupQueue(),
+    closePriceLookupQueue(),
+  ]);
+  log("BullMQ queues closed", "shutdown");
+
+  // Step 4: Close WebSocket server
+  await realtimeService.close();
+  log("WebSocket server closed", "shutdown");
+
+  // Step 5: Close database pool
+  await pool.end();
+  log("Database pool closed", "shutdown");
+
+  // Step 6: Close rate-limiter Redis client
+  await closeRateLimiterRedis();
+  log("Rate-limiter Redis closed", "shutdown");
+
+  log("Graceful shutdown complete", "shutdown");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => { gracefulShutdown("SIGTERM").catch(console.error); });
+process.on("SIGINT",  () => { gracefulShutdown("SIGINT").catch(console.error); });

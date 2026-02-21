@@ -1,5 +1,39 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+// ---------------------------------------------------------------------------
+// CSRF token management
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory cache for the CSRF token.  Fetched lazily on the first mutating
+ * request and reused for the lifetime of the page / session.
+ *
+ * The server stores a matching signed value in an httpOnly cookie.  We send
+ * the raw token as the `X-Csrf-Token` header; the server compares the two.
+ */
+let csrfToken: string | null = null;
+
+async function fetchCsrfToken(): Promise<string> {
+  const res = await fetch("/api/csrf-token", { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to fetch CSRF token");
+  const data = (await res.json()) as { token: string };
+  csrfToken = data.token;
+  return data.token;
+}
+
+/** Forces a fresh token to be fetched on the next mutating request. */
+export function invalidateCsrfToken(): void {
+  csrfToken = null;
+}
+
+async function getCsrfToken(): Promise<string> {
+  return csrfToken ?? fetchCsrfToken();
+}
+
+// ---------------------------------------------------------------------------
+// Core helpers
+// ---------------------------------------------------------------------------
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -7,21 +41,52 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown | undefined,
+  data?: unknown,
 ): Promise<Response> {
+  const isMutating = !SAFE_METHODS.has(method.toUpperCase());
+
+  const headers: Record<string, string> = {};
+  if (data) headers["Content-Type"] = "application/json";
+
+  if (isMutating) {
+    try {
+      headers["X-Csrf-Token"] = await getCsrfToken();
+    } catch {
+      // If the token cannot be fetched, send without it; the server will
+      // return 403 which surfaces as an error to the caller.
+    }
+  }
+
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers,
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
 
+  // Stale CSRF token: clear the cache so the next mutating request gets a
+  // fresh one.  The current request still throws so the caller handles it.
+  if (!res.ok && res.status === 403 && isMutating) {
+    try {
+      const body = (await res.clone().json()) as { code?: string };
+      if (body.code === "INVALID_CSRF_TOKEN") invalidateCsrfToken();
+    } catch {
+      // Body may not be JSON — ignore.
+    }
+  }
+
   await throwIfResNotOk(res);
   return res;
 }
+
+// ---------------------------------------------------------------------------
+// TanStack Query setup
+// ---------------------------------------------------------------------------
 
 type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {

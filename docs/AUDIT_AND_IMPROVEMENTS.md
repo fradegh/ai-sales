@@ -123,13 +123,14 @@ Issues that can cause data breaches, crashes, or data loss. **Fix immediately.**
 - **Effort:** Low
 - **Status:** ✅ FIXED — `MemStorage` class (~1,400 lines) removed from `server/storage.ts`. `server/storage.ts` now contains only the `IStorage` interface and the `DatabaseStorage` export (~230 lines). The class was moved to `server/__tests__/helpers/mem-storage.ts` (a test-only module) since 4 integration tests depended on it. All test imports updated to the new path. No production code imports `MemStorage`. Four pre-existing type errors in the class body were also fixed during the move.
 
-### DEBT-04: `routes.ts` is a monolithic 4,800+ line file
+### DEBT-04: ~~`routes.ts` is a monolithic 4,800+ line file~~ — FIXED
 
-- **File:** `server/routes/routes.ts`
+- **File:** `server/routes.ts`
 - **Lines:** 1–4800+
 - **Problem:** A single file registers 100+ endpoints with inline business logic. Extremely difficult to navigate, review, maintain, or test.
 - **Solution:** Split into domain-specific route files (already partially done with `auth.ts`, `admin.ts`, etc.). Move remaining routes: `customer-routes.ts`, `conversation-routes.ts`, `product-routes.ts`, `knowledge-base-routes.ts`, `analytics-routes.ts`, `onboarding-routes.ts`, `billing-routes.ts`, `vehicle-lookup-routes.ts`.
 - **Effort:** High
+- **Status:** ✅ FIXED — Split into 8 domain-specific route modules under `server/routes/`: `customer.routes.ts`, `conversation.routes.ts`, `product.routes.ts`, `knowledge-base.routes.ts`, `analytics.routes.ts`, `onboarding.routes.ts`, `billing.routes.ts`, `vehicle-lookup.routes.ts`. Each exports a single Express Router with all original middleware, validation, and tenant isolation preserved. The main `server/routes.ts` is now a thin index that only imports and mounts these routers alongside existing auth, admin, webhook, and phase-0 sub-routers. Pure structural refactor — no business logic changes.
 
 ### DEBT-05: 100+ `as any` type casts across server code
 
@@ -216,12 +217,13 @@ Issues that can cause data breaches, crashes, or data loss. **Fix immediately.**
 
 ## Section 3: Architectural Improvements
 
-### ARCH-01: Extract route handlers from monolithic routes.ts
+### ARCH-01: ~~Extract route handlers from monolithic routes.ts~~ — DONE
 
 - **Current state:** 100+ endpoints with inline business logic in a single `routes.ts` (4,800+ lines). Some routes already extracted (`auth.ts`, `admin.ts`, `health.ts`, webhooks).
 - **Proposed change:** Split into domain-specific route modules: `customer.routes.ts`, `conversation.routes.ts`, `product.routes.ts`, `knowledge-base.routes.ts`, `analytics.routes.ts`, `onboarding.routes.ts`, `billing.routes.ts`, `vehicle-lookup.routes.ts`. Each file < 300 lines. Central `routes.ts` only imports and mounts.
 - **Benefits:** Easier navigation, code review, testing, and onboarding. Enables per-route-group middleware.
 - **Risks:** Large diff, potential merge conflicts. Mitigate by doing it in one focused PR.
+- **Status:** ✅ DONE — All 8 domain route modules created and mounted. See DEBT-04 for details.
 
 ### ARCH-02: Move audit log to database-backed implementation
 
@@ -237,19 +239,21 @@ Issues that can cause data breaches, crashes, or data loss. **Fix immediately.**
 - **Benefits:** True multi-tenancy, data isolation, security compliance.
 - **Risks:** Requires touching many routes and storage methods. Thorough testing needed.
 
-### ARCH-04: Replace in-memory rate limiting with Redis-backed
+### ~~ARCH-04: Replace in-memory rate limiting with Redis-backed~~ — FIXED
 
 - **Current state:** Rate limiters use in-memory `Map` (`server/middleware/rate-limiter.ts`). Auth rate limiter uses `express-rate-limit` (also in-memory). PM2 cluster mode means each worker has separate limits.
 - **Proposed change:** Use `ioredis` (already a dependency) for rate limit state. Adopt `rate-limit-redis` store for `express-rate-limit`.
 - **Benefits:** Correct rate limiting across all workers. Survives restarts.
 - **Risks:** Redis becomes a harder dependency. Already required for BullMQ, so minimal additional risk.
+- **Status:** ✅ FIXED — Added `server/redis-client.ts` (shared ioredis singleton); `rate-limiter.ts` now uses atomic Redis INCR+PEXPIRE Lua script for all custom limiters with transparent in-memory fallback when Redis is unavailable; `server/routes/auth.ts` `express-rate-limit` instances use `rate-limit-redis` `RedisStore` with `passOnStoreError: true` for graceful fallback; `server/index.ts` eagerly initialises the Redis client at startup and closes it in the graceful shutdown sequence.
 
-### ARCH-05: Implement graceful shutdown
+### ~~ARCH-05: Implement graceful shutdown~~ — FIXED
 
 - **Current state:** `SIGTERM` handler only kills the Python child process. No HTTP server drain, no DB pool close, no BullMQ worker shutdown.
 - **Proposed change:** On `SIGTERM`: stop accepting new connections, drain in-flight requests (with timeout), close BullMQ workers, close DB pool, close WebSocket server, then exit.
 - **Benefits:** Zero-downtime deployments. No lost messages or orphaned connections.
 - **Risks:** Low. Standard Node.js pattern.
+- **Status:** ✅ FIXED — `server/index.ts` now exports a single `gracefulShutdown(signal)` function registered on both `SIGTERM` and `SIGINT`. Teardown order: (1) kill Max Personal Python subprocess, (2) `httpServer.close()` with a 5-second forced-drain timeout, (3) close all three BullMQ queue connections in parallel via `Promise.allSettled` (`closeQueue`, `closeVehicleLookupQueue`, `closePriceLookupQueue`), (4) `realtimeService.close()` (new `close()` method added to `RealtimeService` in `websocket-server.ts`), (5) `pool.end()` (`pool` exported from `server/db.ts`), (6) `process.exit(0)`. An `isShuttingDown` guard prevents re-entry if a second signal arrives mid-sequence.
 
 ### ARCH-06: Introduce service layer between routes and storage
 
@@ -321,7 +325,7 @@ Issues that can cause data breaches, crashes, or data loss. **Fix immediately.**
 | Gap | Severity | Notes |
 |-----|----------|-------|
 | RBAC fallback returns `operator` | CRITICAL | See CRIT-05 |
-| No CSRF token | HIGH | Session auth without CSRF protection. `sameSite: lax` mitigates POST from cross-site, but not all cases |
+| ~~No CSRF token~~ | ~~HIGH~~ | ~~Session auth without CSRF protection. `sameSite: lax` mitigates POST from cross-site, but not all cases~~ ✅ FIXED — Double-submit cookie pattern via `csrf-csrf` v4 (`server/middleware/csrf.ts`). `GET /api/csrf-token` generates a HMAC-signed token (httpOnly cookie) and returns the raw value; `apiRequest()` in `client/src/lib/queryClient.ts` fetches it lazily and sends it as `X-Csrf-Token` on all POST/PUT/PATCH/DELETE; webhook paths exempt via `skipCsrfProtection`; stale tokens auto-cleared on 403. |
 | WebSocket unauthenticated | CRITICAL | See CRIT-01 |
 | Impersonation missing tenantId | CRITICAL | See CRIT-09 |
 | ~~Webhook verification skipped when secrets not set~~ | ~~HIGH~~ | ~~`webhook-security.ts:70-72` returns `{valid: true}` if secret is undefined~~ ✅ FIXED — All three verify functions (`verifyTelegramWebhook`, `verifyWhatsAppWebhook`, `verifyMaxWebhook`) now return `{valid: false, error: "Webhook secret not configured"}` when `NODE_ENV` is `"production"` or `"staging"` and the secret env var is absent. Permissive pass-through is retained only in development/test. |
@@ -380,11 +384,11 @@ Issues that can cause data breaches, crashes, or data loss. **Fix immediately.**
 
 | Issue | Impact | Recommendation |
 |-------|--------|----------------|
-| No code splitting / lazy loading | All 20 pages loaded upfront | Use `React.lazy()` + `Suspense` for route-based code splitting |
+| ~~No code splitting / lazy loading~~ | ~~All 20 pages loaded upfront~~ | ✅ FIXED — All 20 page components in `client/src/App.tsx` converted to `React.lazy()`. Three `<Suspense fallback={<PageLoader />}>` boundaries added (main `Router`, `AuthRouter`, `OwnerRouter`). Each page is now a separate Vite/Rollup chunk loaded on first navigation. |
 | 40+ shadcn/ui components imported | Tree-shaking helps but not fully | Already individual imports — OK |
-| recharts imported on all pages | Heavy charting library (~200KB) | Lazy-load only on analytics page |
+| ~~recharts imported on all pages~~ | ~~Heavy charting library (~200KB)~~ | ✅ FIXED — `recharts` is only referenced in `ui/chart.tsx`. `Analytics` is now its own lazy chunk, so recharts stays out of the main bundle and loads only when `/analytics` is visited. |
 | framer-motion | ~100KB | Only use where animations are needed, lazy-load elsewhere |
-| Google Fonts in index.html | Render-blocking | Use `font-display: swap` and preload |
+| ~~Google Fonts in index.html~~ | ~~Render-blocking~~ | ✅ ALREADY DONE — `&display=swap` was already present at the end of the Google Fonts URL in `client/index.html`, which causes the Fonts API to emit `font-display: swap` on every `@font-face` rule it serves. |
 
 ### 5.6 Database Query Optimization
 
@@ -394,7 +398,7 @@ Issues that can cause data breaches, crashes, or data loss. **Fix immediately.**
 | ~~`getDashboardMetrics` — SELECT * to count~~ | ✅ FIXED — 4 `COUNT(*)` aggregate queries in `Promise.all`. No full rows loaded. |
 | ~~`getEscalationsByTenant` — double query~~ | ✅ FIXED — Drizzle subquery: `WHERE conversationId IN (SELECT id FROM conversations WHERE tenantId = ?)`. |
 | `getAllRagChunksWithEmbedding` — full table scan | Install pgvector, use `<=>` operator for nearest-neighbor search |
-| `getMessagesByConversation` — no pagination | Add `LIMIT`/`OFFSET` or cursor-based pagination |
+| ~~`getMessagesByConversation` — no pagination~~ | ✅ FIXED — `getMessagesByConversationPaginated(conversationId, cursor?, limit?)` added to `IStorage` + `DatabaseStorage`. `GET /api/conversations/:id/messages?cursor=&limit=` returns `{ messages, nextCursor }`. Existing callers unchanged. |
 | Missing indexes | Add composite indexes on `(tenantId, status)` for conversations, `(tenantId, customerId)` for customer_memory |
 
 ---
@@ -562,7 +566,7 @@ The following significant features exist in code but are not documented in any f
 
 ### Sprint 3 — Improvements (next iteration)
 
-1. **Split `routes.ts` into domain modules** (DEBT-04, ARCH-01) — Extract into 8–10 focused route files. [1–2 days]
+1. ~~**Split `routes.ts` into domain modules** (DEBT-04, ARCH-01) — Extract into 8–10 focused route files. [1–2 days]~~ ✅ DONE
 2. **Split `settings.tsx` into tab components** (DEBT-11) — [4 hours]
 3. **Add code splitting / lazy loading** — `React.lazy()` for route-based splitting. [2 hours]
 4. **Install pgvector and migrate RAG to vector search** — Eliminate JS-side cosine similarity. [1 day]

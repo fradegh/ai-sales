@@ -733,6 +733,28 @@ export class MemStorage implements IStorage {
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }
 
+  async getMessagesByConversationPaginated(
+    conversationId: string,
+    cursor?: string,
+    limit = 50,
+  ): Promise<{ messages: Message[]; nextCursor: string | null }> {
+    const safeLimit = Math.min(Math.max(1, limit), 200);
+    const all = await this.getMessagesByConversation(conversationId);
+
+    let startIdx = 0;
+    if (cursor) {
+      const cursorIdx = all.findIndex((m) => m.id === cursor);
+      if (cursorIdx !== -1) startIdx = cursorIdx + 1;
+    }
+
+    const slice = all.slice(startIdx, startIdx + safeLimit + 1);
+    const hasMore = slice.length > safeLimit;
+    const page = hasMore ? slice.slice(0, safeLimit) : slice;
+    const nextCursor = hasMore ? page[page.length - 1].id : null;
+
+    return { messages: page, nextCursor };
+  }
+
   async createMessage(message: InsertMessage & { createdAt?: Date }): Promise<Message> {
     const id = randomUUID();
     const messageTime = message.createdAt || new Date();

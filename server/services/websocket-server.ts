@@ -183,6 +183,15 @@ class RealtimeService {
       }
     });
   }
+
+  async close(): Promise<void> {
+    if (!this.wss) return;
+    await new Promise<void>((resolve) => {
+      this.wss!.close(() => resolve());
+    });
+    this.wss = null;
+    this.clients.clear();
+  }
 }
 
 export const realtimeService = new RealtimeService();
