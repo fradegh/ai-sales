@@ -25,6 +25,7 @@ import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
 
 let maxPersonalProcess: ChildProcess | null = null;
+let podzamenuProcess: ChildProcess | null = null;
 let vehicleLookupWorker: Worker | null = null;
 let priceLookupWorker: Worker | null = null;
 let messageSendWorker: Worker | null = null;
@@ -168,6 +169,9 @@ app.use((req, res, next) => {
       // Auto-start Max Personal Python service
       startMaxPersonalService();
 
+      // Auto-start Podzamenu lookup service
+      startPodzamenuService();
+
       // Start BullMQ workers
       vehicleLookupWorker = await startVehicleLookupWorker();
       priceLookupWorker = await startPriceLookupWorker();
@@ -279,6 +283,62 @@ function startMaxPersonalService() {
   }
 }
 
+// Auto-start Podzamenu Python lookup service (FastAPI, port 8200)
+function startPodzamenuService() {
+  const scriptPath = "./podzamenu_lookup_service.py";
+
+  if (!fs.existsSync(scriptPath)) {
+    log("Podzamenu service script not found, skipping auto-start", "podzamenu");
+    return;
+  }
+
+  if (podzamenuProcess && !podzamenuProcess.killed) {
+    log("Podzamenu service already running", "podzamenu");
+    return;
+  }
+
+  try {
+    log("Starting Podzamenu lookup service...", "podzamenu");
+
+    podzamenuProcess = spawn("python3", [scriptPath], {
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PORT: "8200",
+      },
+    });
+
+    podzamenuProcess.stdout?.on("data", (data: Buffer) => {
+      const lines = data.toString().trim().split("\n");
+      lines.forEach(line => {
+        if (line.includes("Uvicorn running")) {
+          log("Podzamenu service started on port 8200", "podzamenu");
+        }
+      });
+    });
+
+    podzamenuProcess.stderr?.on("data", (data: Buffer) => {
+      const msg = data.toString().trim();
+      if (!msg.includes("INFO:")) {
+        console.error("[Podzamenu]", msg);
+      }
+    });
+
+    podzamenuProcess.on("error", (err) => {
+      log(`Podzamenu service error: ${err.message}`, "podzamenu");
+    });
+
+    podzamenuProcess.on("exit", (code, signal) => {
+      log(`Podzamenu service exited (code: ${code}, signal: ${signal})`, "podzamenu");
+      podzamenuProcess = null;
+    });
+
+  } catch (err: any) {
+    log(`Failed to start Podzamenu service: ${err.message}`, "podzamenu");
+  }
+}
+
 // Graceful shutdown — ordered teardown on SIGTERM / SIGINT
 let isShuttingDown = false;
 
@@ -288,10 +348,14 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   log(`Received ${signal}, starting graceful shutdown`, "shutdown");
 
-  // Kill Python subprocess first so it stops producing new work
+  // Kill Python subprocesses first so they stop producing new work
   if (maxPersonalProcess && !maxPersonalProcess.killed) {
     maxPersonalProcess.kill();
     log("Max Personal service stopped", "shutdown");
+  }
+  if (podzamenuProcess && !podzamenuProcess.killed) {
+    podzamenuProcess.kill();
+    log("Podzamenu service stopped", "shutdown");
   }
 
   // Step 1 + 2: Stop accepting new connections; drain in-flight with 5 s timeout

@@ -51,6 +51,19 @@ module.exports = {
       error_file: path.join(__dirname, '../logs/worker-price-lookup-error.log'),
       out_file: path.join(__dirname, '../logs/worker-price-lookup-out.log'),
       time: true
+    },
+    {
+      name: 'podzamenu-service',
+      script: 'podzamenu_lookup_service.py',
+      interpreter: 'python3',
+      cwd: __dirname,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '512M',
+      env: { PORT: '8200', ...envVars },
+      error_file: path.join(__dirname, '../logs/podzamenu-error.log'),
+      out_file: path.join(__dirname, '../logs/podzamenu-out.log'),
+      time: true
     }
   ]
 };
