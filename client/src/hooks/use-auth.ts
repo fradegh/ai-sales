@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 
 interface AuthUser {
   id: string;
@@ -31,12 +32,15 @@ async function fetchUser(): Promise<AuthUser | null> {
 }
 
 async function logout(): Promise<void> {
-  await fetch("/auth/logout", { method: "POST", credentials: "include" });
-  window.location.href = "/";
+  const response = await fetch("/auth/logout", { method: "POST", credentials: "include" });
+  if (!response.ok) {
+    throw new Error(`Logout failed: ${response.status}`);
+  }
 }
 
 export function useAuth() {
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
   const { data: user, isLoading } = useQuery<AuthUser | null>({
     queryKey: ["/api/auth/user"],
     queryFn: fetchUser,
@@ -47,7 +51,17 @@ export function useAuth() {
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: () => {
+      // Synchronously mark user as null so isAuthenticated flips to false
+      // immediately, without triggering a background refetch (avoids the
+      // re-authentication race where the query re-fires before the session
+      // cookie is cleared on the server).
       queryClient.setQueryData(["/api/auth/user"], null);
+      // Purge all other cached data so stale authenticated responses cannot
+      // leak to the next session.
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== "/api/auth/user",
+      });
+      navigate("/login");
     },
   });
 

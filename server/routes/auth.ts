@@ -274,11 +274,14 @@ router.post("/logout", async (req: Request, res: Response) => {
     }
   }
 
-  if (req.session) {
-    req.session.destroy?.((err: any) => {
-      if (err) {
-        console.error("[Auth] Logout error:", err);
-      }
+  if (req.session?.destroy) {
+    await new Promise<void>((resolve) => {
+      req.session.destroy((err: any) => {
+        if (err) {
+          console.error("[Auth] Session destroy error:", err);
+        }
+        resolve();
+      });
     });
   }
   res.clearCookie("connect.sid");
