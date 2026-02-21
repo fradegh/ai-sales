@@ -107,6 +107,27 @@ router.patch("/api/conversations/:id", requireAuth, requireOperator, async (req:
   }
 });
 
+router.delete("/api/conversations/:id", requireAuth, requirePermission("MANAGE_CONVERSATIONS"), async (req: Request, res: Response) => {
+  try {
+    if (!req.userId || req.userId === "system") {
+      return res.status(403).json({ error: "User authentication required" });
+    }
+    const user = await getUserForConversations(req.userId);
+    if (!user?.tenantId) {
+      return res.status(403).json({ error: "User not associated with a tenant" });
+    }
+    const conversation = await storage.getConversation(req.params.id);
+    if (!conversation || conversation.tenantId !== user.tenantId) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
+    await storage.deleteConversation(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting conversation:", error);
+    res.status(500).json({ error: "Failed to delete conversation" });
+  }
+});
+
 router.post("/api/conversations/:id/read", requireAuth, requirePermission("VIEW_CONVERSATIONS"), async (req: Request, res: Response) => {
   try {
     if (!req.userId || req.userId === "system") {

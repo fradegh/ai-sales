@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { User, ArrowLeft, MessageSquarePlus } from "lucide-react";
+import { User, ArrowLeft } from "lucide-react";
 import type { ConversationWithCustomer, ConversationDetail } from "@shared/schema";
 
 export default function Conversations() {
@@ -143,6 +143,28 @@ export default function Conversations() {
     startPhoneConversationMutation.mutate(phoneNumber);
   };
 
+  const deleteConversationMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/conversations/${id}`);
+      if (!res.ok) {
+        const json = await res.json();
+        throw new Error(json.error || "Ошибка удаления");
+      }
+      return id;
+    },
+    onSuccess: (deletedId) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      if (selectedId === deletedId) {
+        setSelectedId(null);
+        setMobileShowChat(false);
+      }
+      toast({ title: "Диалог удалён" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Не удалось удалить диалог", description: error.message, variant: "destructive" });
+    },
+  });
+
   const simulateMessageMutation = useMutation({
     mutationFn: async (data: { customerName: string; customerPhone: string; message: string }) => {
       const res = await apiRequest("POST", "/api/test/simulate-message", data);
@@ -187,21 +209,10 @@ export default function Conversations() {
           conversations={conversations || []}
           selectedId={selectedId || undefined}
           onSelect={handleSelectConversation}
+          onDelete={(id) => deleteConversationMutation.mutate(id)}
+          onCreateTestDialog={() => setTestDialogOpen(true)}
           isLoading={conversationsLoading}
         />
-        {!conversationsLoading && conversations?.length === 0 && (
-          <div className="flex flex-col items-center gap-2 p-4 border-t">
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full gap-2"
-              onClick={() => setTestDialogOpen(true)}
-            >
-              <MessageSquarePlus className="h-4 w-4" />
-              Создать тестовый диалог
-            </Button>
-          </div>
-        )}
       </div>
 
       {/* Test Dialog */}

@@ -1,8 +1,20 @@
+import { useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
-import { Search, MessageCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Search, MessageCircle, Trash2, MessageSquarePlus } from "lucide-react";
 import { SiTelegram, SiWhatsapp } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import type { ConversationWithCustomer } from "@shared/schema";
@@ -34,6 +46,8 @@ interface ConversationListProps {
   conversations: ConversationWithCustomer[];
   selectedId?: string;
   onSelect: (id: string) => void;
+  onDelete?: (id: string) => void;
+  onCreateTestDialog?: () => void;
   isLoading?: boolean;
 }
 
@@ -54,11 +68,22 @@ export function ConversationList({
   conversations,
   selectedId,
   onSelect,
+  onDelete,
+  onCreateTestDialog,
   isLoading,
 }: ConversationListProps) {
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  const handleDeleteConfirm = () => {
+    if (deleteTargetId && onDelete) {
+      onDelete(deleteTargetId);
+    }
+    setDeleteTargetId(null);
+  };
+
   return (
     <div className="flex h-full flex-col border-r">
-      <div className="border-b p-3">
+      <div className="border-b p-3 flex flex-col gap-2">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -67,6 +92,17 @@ export function ConversationList({
             data-testid="input-search-conversations"
           />
         </div>
+        {onCreateTestDialog && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full gap-2"
+            onClick={onCreateTestDialog}
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+            Создать тестовый диалог
+          </Button>
+        )}
       </div>
       <ScrollArea className="flex-1">
         {isLoading ? (
@@ -93,14 +129,14 @@ export function ConversationList({
         ) : (
           <div className="p-2">
             {conversations.map((conversation) => (
-              <button
+              <div
                 key={conversation.id}
-                onClick={() => onSelect(conversation.id)}
                 className={cn(
-                  "flex w-full gap-3 rounded-md p-3 text-left transition-colors hover-elevate",
+                  "group relative flex w-full gap-3 rounded-md p-3 text-left transition-colors hover-elevate cursor-pointer",
                   selectedId === conversation.id && "bg-accent"
                 )}
                 data-testid={`conversation-item-${conversation.id}`}
+                onClick={() => onSelect(conversation.id)}
               >
                 <div className="relative">
                   <Avatar className="h-10 w-10">
@@ -145,11 +181,44 @@ export function ConversationList({
                     )}
                   </div>
                 </div>
-              </button>
+                {onDelete && (
+                  <button
+                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTargetId(conversation.id);
+                    }}
+                    data-testid={`delete-conversation-${conversation.id}`}
+                    aria-label="Удалить диалог"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}
       </ScrollArea>
+
+      <AlertDialog open={!!deleteTargetId} onOpenChange={(open) => !open && setDeleteTargetId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить диалог?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Это действие нельзя отменить. Диалог и все сообщения будут удалены навсегда.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

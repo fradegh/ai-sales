@@ -111,6 +111,7 @@ export interface IStorage {
   getActiveConversations(tenantId: string): Promise<ConversationWithCustomer[]>;
   createConversation(conversation: InsertConversation & { lastMessageAt?: Date; createdAt?: Date }): Promise<Conversation>;
   updateConversation(id: string, data: Partial<InsertConversation>): Promise<Conversation | undefined>;
+  deleteConversation(id: string): Promise<boolean>;
 
   // Messages
   getMessage(id: string): Promise<Message | undefined>;

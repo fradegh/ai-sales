@@ -485,6 +485,29 @@ export class DatabaseStorage implements IStorage {
     return conv;
   }
 
+  async deleteConversation(id: string): Promise<boolean> {
+    // Get ai_suggestion IDs first to delete human_actions
+    const suggestions = await db.select({ id: aiSuggestions.id })
+      .from(aiSuggestions)
+      .where(eq(aiSuggestions.conversationId, id));
+    const suggestionIds = suggestions.map(s => s.id);
+
+    if (suggestionIds.length > 0) {
+      await db.delete(humanActions).where(inArray(humanActions.suggestionId, suggestionIds));
+    }
+    await db.delete(aiTrainingSamples).where(eq(aiTrainingSamples.conversationId, id));
+    await db.delete(learningQueue).where(eq(learningQueue.conversationId, id));
+    await db.delete(csatRatings).where(eq(csatRatings.conversationId, id));
+    await db.delete(conversions).where(eq(conversions.conversationId, id));
+    await db.delete(lostDeals).where(eq(lostDeals.conversationId, id));
+    await db.delete(vehicleLookupCases).where(eq(vehicleLookupCases.conversationId, id));
+    await db.delete(escalationEvents).where(eq(escalationEvents.conversationId, id));
+    await db.delete(aiSuggestions).where(eq(aiSuggestions.conversationId, id));
+    await db.delete(messages).where(eq(messages.conversationId, id));
+    await db.delete(conversations).where(eq(conversations.id, id));
+    return true;
+  }
+
   async getMessage(id: string): Promise<Message | undefined> {
     const [msg] = await db.select().from(messages).where(eq(messages.id, id));
     return msg;
