@@ -4,7 +4,7 @@ nixPkgs = ["nodejs_20", "python311", "python311Packages.pip"]
 [phases.install]
 cmds = [
   "npm ci",
-  "pip install fastapi uvicorn playwright pydantic aiohttp httpx requests pillow qrcode",
+  "pip install --break-system-packages fastapi uvicorn playwright pydantic aiohttp httpx requests pillow qrcode",
   "python3 -m playwright install chromium --with-deps"
 ]
 
