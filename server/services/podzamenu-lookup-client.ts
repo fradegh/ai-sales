@@ -4,7 +4,9 @@
  */
 
 const DEFAULT_URL = "http://localhost:8200";
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 60_000;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 10_000;
 
 export const PODZAMENU_NOT_FOUND = "NOT_FOUND" as const;
 
@@ -43,13 +45,14 @@ export class PodzamenuLookupError extends Error {
   }
 }
 
-export async function lookupByVehicleId(
-  request: LookupRequest
-): Promise<LookupResponse> {
-  const baseUrl =
-    process.env.PODZAMENU_LOOKUP_SERVICE_URL?.trim() || DEFAULT_URL;
-  const url = `${baseUrl.replace(/\/$/, "")}/lookup`;
+function isRetryable(err: PodzamenuLookupError): boolean {
+  // Retry on timeout, connection refused / fetch failed, and HTTP 5xx
+  if (err.code === "TIMEOUT" || err.code === "NETWORK_ERROR") return true;
+  if (err.code === "LOOKUP_ERROR" && err.statusCode !== undefined && err.statusCode >= 500) return true;
+  return false;
+}
 
+async function attemptLookup(url: string, request: LookupRequest): Promise<LookupResponse> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -146,4 +149,33 @@ export async function lookupByVehicleId(
       "UNKNOWN"
     );
   }
+}
+
+export async function lookupByVehicleId(
+  request: LookupRequest
+): Promise<LookupResponse> {
+  const baseUrl =
+    process.env.PODZAMENU_LOOKUP_SERVICE_URL?.trim() || DEFAULT_URL;
+  const url = `${baseUrl.replace(/\/$/, "")}/lookup`;
+
+  let lastError: PodzamenuLookupError | undefined;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      console.log(
+        `[PodzamenuClient] Retry ${attempt}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s (last error: ${lastError?.code})`
+      );
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+
+    try {
+      return await attemptLookup(url, request);
+    } catch (err) {
+      if (!(err instanceof PodzamenuLookupError)) throw err;
+      lastError = err;
+      if (!isRetryable(err)) throw err;
+    }
+  }
+
+  throw lastError!;
 }

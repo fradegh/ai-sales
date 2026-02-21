@@ -172,6 +172,11 @@ app.use((req, res, next) => {
       // Auto-start Podzamenu lookup service
       startPodzamenuService();
 
+      // Wait for Podzamenu (Playwright) to finish initializing before workers start
+      log("Waiting 15s for Podzamenu service to initialize...", "startup");
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+      log("Podzamenu startup delay elapsed, starting BullMQ workers", "startup");
+
       // Start BullMQ workers
       vehicleLookupWorker = await startVehicleLookupWorker();
       priceLookupWorker = await startPriceLookupWorker();
