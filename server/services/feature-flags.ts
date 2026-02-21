@@ -84,12 +84,40 @@ class FeatureFlagService {
   }
 
   /**
+   * Ensure the partial unique indexes required by persistToDb() exist.
+   * Idempotent (IF NOT EXISTS) — safe to run on every startup.
+   * This self-heals deployments where db:migrate was not run manually.
+   */
+  private async ensureSchema(): Promise<void> {
+    // Drop the old column-level UNIQUE(name) constraint if it still exists
+    // (present in DBs created before migration 0013 was applied).
+    await db.execute(sql`
+      ALTER TABLE feature_flags DROP CONSTRAINT IF EXISTS feature_flags_name_unique
+    `);
+
+    // Partial index for global flags (tenant_id IS NULL): unique on name
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS feature_flags_global_unique
+        ON feature_flags (name)
+        WHERE tenant_id IS NULL
+    `);
+
+    // Partial index for per-tenant overrides (tenant_id IS NOT NULL): unique on (name, tenant_id)
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS feature_flags_tenant_unique
+        ON feature_flags (name, tenant_id)
+        WHERE tenant_id IS NOT NULL
+    `);
+  }
+
+  /**
    * Load persisted flags from the DB and merge them into the in-memory cache,
    * overwriting defaults with stored values.  Should be awaited at server
    * startup before requests are served.
    */
   async initFromDb(): Promise<void> {
     try {
+      await this.ensureSchema();
       const rows = await db.select().from(featureFlags);
       for (const row of rows) {
         this.flags.set(this.getKey(row.name, row.tenantId), {
