@@ -102,7 +102,7 @@ class RealtimeService {
         try {
           const user = await storage.getUser(session.userId);
           if (!user?.tenantId) {
-            console.warn(`[WebSocket] Rejected: user ${session.userId} has no tenant`);
+            console.debug(`[WebSocket] Rejected: user ${session.userId} has no tenant (platform staff)`);
             socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
             socket.destroy();
             return;
