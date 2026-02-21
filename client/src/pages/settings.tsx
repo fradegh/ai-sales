@@ -75,6 +75,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { useBillingStatus, isSubscriptionRequired } from "@/hooks/use-billing";
+import { useAutoPartsEnabled } from "@/hooks/useAutoPartsEnabled";
 import { SubscriptionPaywall, ChannelPaywallOverlay, SubscriptionBadge } from "@/components/subscription-paywall";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -2785,6 +2786,7 @@ function renderTemplatePreview(content: string): string {
 
 function TemplatesTab() {
   const { toast } = useToast();
+  const autoPartsEnabled = useAutoPartsEnabled();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -3008,11 +3010,15 @@ function TemplatesTab() {
                     <SelectValue placeholder="Выберите тип" />
                   </SelectTrigger>
                   <SelectContent>
-                    {Object.entries(TEMPLATE_TYPE_LABELS).map(([val, label]) => (
-                      <SelectItem key={val} value={val}>
-                        {label}
-                      </SelectItem>
-                    ))}
+                    {Object.entries(TEMPLATE_TYPE_LABELS)
+                      .filter(([val]) =>
+                        autoPartsEnabled ? true : val !== "price_result" && val !== "price_options"
+                      )
+                      .map(([val, label]) => (
+                        <SelectItem key={val} value={val}>
+                          {label}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -3849,6 +3855,7 @@ function AgentSettingsTab() {
 
 export default function Settings() {
   const { toast } = useToast();
+  const autoPartsEnabled = useAutoPartsEnabled();
 
   const { data: tenant, isLoading } = useQuery<Tenant>({
     queryKey: ["/api/tenant"],
@@ -3959,10 +3966,12 @@ export default function Settings() {
             <CreditCard className="mr-2 h-4 w-4" />
             Оплата
           </TabsTrigger>
-          <TabsTrigger value="agent" data-testid="tab-agent">
-            <Bot className="mr-2 h-4 w-4" />
-            Агент
-          </TabsTrigger>
+          {autoPartsEnabled && (
+            <TabsTrigger value="agent" data-testid="tab-agent">
+              <Bot className="mr-2 h-4 w-4" />
+              Агент
+            </TabsTrigger>
+          )}
           <TabsTrigger value="channels" data-testid="tab-channels">
             <Link2 className="mr-2 h-4 w-4" />
             Каналы

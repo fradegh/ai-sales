@@ -4,6 +4,7 @@ import { auditLog } from "../services/audit-log";
 import { storage } from "../storage";
 import { z } from "zod";
 import { requireAuth, requireAdmin, requirePermission } from "../middleware/rbac";
+import { requirePlatformAdmin } from "../middleware/platform-admin";
 
 // Validation schemas
 const toggleFlagSchema = z.object({
@@ -23,6 +24,18 @@ export function registerPhase0Routes(app: Express): void {
     } catch (error) {
       console.error("Error fetching feature flags:", error);
       res.status(500).json({ error: "Failed to fetch feature flags" });
+    }
+  });
+
+  // Get all flag values for a specific tenant (for admin UI) — must be before /:name
+  app.get("/api/admin/feature-flags/tenant/:tenantId", requireAuth, requirePlatformAdmin(), async (req: Request, res: Response) => {
+    try {
+      const { tenantId } = req.params;
+      const flags = await featureFlagService.getAllFlags(tenantId);
+      res.json(flags);
+    } catch (error) {
+      console.error("Error fetching tenant feature flags:", error);
+      res.status(500).json({ error: "Failed to fetch tenant feature flags" });
     }
   });
 

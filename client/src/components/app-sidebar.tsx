@@ -9,7 +9,9 @@ import {
   AlertTriangle,
   Bot,
   BarChart3,
+  Building2,
 } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
 import {
   Sidebar,
   SidebarContent,
@@ -60,6 +62,8 @@ const managementItems = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+  const { user } = useAuth();
+  const isPlatformStaff = user?.isPlatformAdmin || user?.isPlatformOwner;
   
   const { data: conversations } = useQuery<Conversation[]>({
     queryKey: ["/api/conversations"],
@@ -162,6 +166,27 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {isPlatformStaff && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Платформа</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location === "/admin/tenants"}
+                    data-testid="nav-admin-tenants"
+                  >
+                    <Link href="/admin/tenants">
+                      <Building2 className="h-4 w-4" />
+                      <span>Тенанты</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter className="p-4">
         <div className="flex items-center gap-2 rounded-md bg-muted p-3">

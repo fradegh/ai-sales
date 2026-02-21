@@ -3,6 +3,7 @@ import type { ParsedIncomingMessage } from "./channel-adapter";
 import { getMergedGearboxTemplates, fillGearboxTemplate } from "./gearbox-templates";
 import { detectGearboxType } from "./price-sources/types";
 import { realtimeService } from "./websocket-server";
+import { featureFlagService } from "./feature-flags";
 
 const VIN_CHARS = "A-HJ-NPR-Z0-9"; // VIN excludes I, O, Q
 const VIN_REGEX = new RegExp(`[${VIN_CHARS}]{17}`, "gi");
@@ -333,6 +334,13 @@ export async function processIncomingMessageFull(
   try {
     const result = await handleIncomingMessage(tenantId, parsed);
     const text = (parsed.text || "").trim();
+
+    const autoPartsEnabled = await featureFlagService.isEnabled("AUTO_PARTS_ENABLED", tenantId);
+
+    if (!autoPartsEnabled) {
+      await triggerAiSuggestion(result.conversationId);
+      return;
+    }
 
     const vehicleDet = detectVehicleIdFromText(text);
 

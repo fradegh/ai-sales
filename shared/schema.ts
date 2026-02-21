@@ -802,6 +802,7 @@ export const FEATURE_FLAG_NAMES = [
   "WHATSAPP_PERSONAL_CHANNEL_ENABLED",
   "MAX_CHANNEL_ENABLED",
   "MAX_PERSONAL_CHANNEL_ENABLED",
+  "AUTO_PARTS_ENABLED",
 ] as const;
 
 // ============ Channel Types ============

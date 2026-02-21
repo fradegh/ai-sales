@@ -33,6 +33,7 @@ const AdminSecrets = lazy(() => import("@/pages/admin-secrets"));
 const AdminUsers = lazy(() => import("@/pages/admin-users"));
 const AdminBilling = lazy(() => import("@/pages/admin-billing"));
 const AdminProxies = lazy(() => import("@/pages/admin-proxies"));
+const AdminTenants = lazy(() => import("@/pages/admin-tenants"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const OwnerLoginPage = lazy(() => import("@/pages/owner-login"));
 const OwnerDashboard = lazy(() => import("@/pages/owner-dashboard"));
@@ -100,6 +101,9 @@ function Router() {
         </Route>
         <Route path="/admin/proxies">
           {() => <AdminGuard><AdminProxies /></AdminGuard>}
+        </Route>
+        <Route path="/admin/tenants">
+          {() => <AdminGuard><AdminTenants /></AdminGuard>}
         </Route>
         <Route component={NotFound} />
       </Switch>

@@ -51,6 +51,10 @@ const DEFAULT_FLAGS: Record<FeatureFlagName, { description: string; enabled: boo
     description: "Enable WhatsApp Personal (Baileys) channel",
     enabled: false,
   },
+  AUTO_PARTS_ENABLED: {
+    description: "Enable auto parts dealer functionality (VIN lookup, gearbox ID, price search, Agent tab, price templates)",
+    enabled: false,
+  },
 };
 
 class FeatureFlagService {
