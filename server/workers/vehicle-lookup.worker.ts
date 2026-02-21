@@ -1,4 +1,5 @@
 import { Worker, Job } from "bullmq";
+import IORedis from "ioredis";
 import { VehicleLookupJobData } from "../services/vehicle-lookup-queue";
 import { getRedisConnectionConfig } from "../services/message-queue";
 import {
@@ -318,10 +319,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
   }
 }
 
-export function createVehicleLookupWorker(connectionConfig: {
-  host: string;
-  port: number;
-}): Worker<VehicleLookupJobData> {
+export function createVehicleLookupWorker(connectionConfig: IORedis): Worker<VehicleLookupJobData> {
   const worker = new Worker<VehicleLookupJobData>(
     QUEUE_NAME,
     async (job) => {

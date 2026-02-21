@@ -1,4 +1,5 @@
 import { Worker, Job } from "bullmq";
+import IORedis from "ioredis";
 import { PriceLookupJobData, SearchFallback } from "../services/price-lookup-queue";
 import { getRedisConnectionConfig } from "../services/message-queue";
 import { storage } from "../storage";
@@ -601,10 +602,7 @@ async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
 
 // ─── Worker factory ───────────────────────────────────────────────────────────
 
-export function createPriceLookupWorker(connectionConfig: {
-  host: string;
-  port: number;
-}): Worker<PriceLookupJobData> {
+export function createPriceLookupWorker(connectionConfig: IORedis): Worker<PriceLookupJobData> {
   const worker = new Worker<PriceLookupJobData>(
     QUEUE_NAME,
     async (job) => {

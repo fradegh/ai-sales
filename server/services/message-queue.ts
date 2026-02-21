@@ -1,4 +1,5 @@
 import { Queue, Job, QueueEvents } from "bullmq";
+import IORedis from "ioredis";
 import { featureFlagService } from "./feature-flags";
 import { auditLog } from "./audit-log";
 
@@ -37,7 +38,7 @@ const metrics: MessageQueueMetrics = {
 
 let totalDelayMs = 0;
 
-export function getRedisConnectionConfig(): { host: string; port: number } | null {
+export function getRedisConnectionConfig(): IORedis | null {
   const redisUrl = process.env.REDIS_URL;
   if (!redisUrl) {
     console.warn("[MessageQueue] REDIS_URL not configured, queue disabled");
@@ -45,11 +46,10 @@ export function getRedisConnectionConfig(): { host: string; port: number } | nul
   }
 
   try {
-    const url = new URL(redisUrl);
-    return {
-      host: url.hostname,
-      port: parseInt(url.port, 10) || 6379,
-    };
+    return new IORedis(redisUrl, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
   } catch (error) {
     console.error("[MessageQueue] Invalid REDIS_URL:", error);
     return null;

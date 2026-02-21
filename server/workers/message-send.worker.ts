@@ -1,4 +1,5 @@
 import { Worker, Job } from "bullmq";
+import IORedis from "ioredis";
 import {
   DelayedMessageJobData,
   recordJobCompleted,
@@ -133,7 +134,7 @@ async function processDelayedMessage(job: Job<DelayedMessageJobData>): Promise<v
   }
 }
 
-export function createMessageSendWorker(connectionConfig: { host: string; port: number }): Worker<DelayedMessageJobData> {
+export function createMessageSendWorker(connectionConfig: IORedis): Worker<DelayedMessageJobData> {
   const worker = new Worker<DelayedMessageJobData>(
     QUEUE_NAME,
     async (job) => {
