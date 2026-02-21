@@ -167,9 +167,8 @@ function parseListingsFromResponse(content: string): ParsedListing[] {
 }
 
 /**
- * Estimates used/contract transmission prices via OpenAI chat completion (gpt-4o-mini).
- * The model reasons about typical Russian market prices (avito.ru, drom.ru, etc.)
- * based on the OEM code and model name provided.
+ * Searches for used/contract transmission prices via OpenAI Responses API
+ * (gpt-4o-mini-search-preview with web_search_preview tool).
  * Returns source: 'not_found' if < 2 valid listings found after filtering.
  */
 export async function searchUsedTransmissionPrice(
@@ -195,35 +194,31 @@ export async function searchUsedTransmissionPrice(
   };
 
   const runSearch = async (query: string): Promise<ParsedListing[]> => {
-    console.log(`[PriceSearcher] Price estimation query: "${query}"`);
+    console.log(`[PriceSearcher] Web search query: "${query}"`);
+    // Embed output format instructions directly in the input — search models don't use system prompts
+    const input =
+      query +
+      "\n\nНайди актуальные объявления о продаже б/у и контрактных КПП на avito.ru, drom.ru, autopiter.ru, exist.ru. " +
+      "Верни ТОЛЬКО JSON-массив без пояснений: " +
+      '[{"title":"...","price":число_рублей,"mileage":число_км_или_null,"url":"...","site":"...","isUsed":true}]. ' +
+      "ИСКЛЮЧАЙ новые и восстановленные коробки. ВКЛЮЧАЙ только б/у, контрактные, с разборки.";
     try {
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content:
-              "Ты эксперт по ценам на контрактные и б/у коробки передач (КПП) на российском рынке. " +
-              "На основе марки, модели и кода КПП оцени реалистичные рыночные цены, " +
-              "опираясь на типичный диапазон цен на avito.ru, drom.ru, autopiter.ru, exist.ru. " +
-              "Верни ТОЛЬКО JSON-массив без пояснений: " +
-              "[{\"title\": \"описание\", \"price\": число_в_рублях, \"mileage\": число_км_или_null, \"url\": \"\", \"site\": \"market_estimate\", \"isUsed\": true}]. " +
-              "Верни 3–5 вариантов с разным пробегом и ценой (бюджет / средний / качество). " +
-              "ИСКЛЮЧАЙ новые и восстановленные коробки. " +
-              "Цены указывай в рублях без знаков и пробелов внутри числа (например: 45000, не 45 000 и не 45000₽).",
-          },
-          {
-            role: "user",
-            content: query,
-          },
-        ],
+      const response = await (openai as any).responses.create({
+        model: "gpt-4o-mini-search-preview",
+        tools: [{ type: "web_search_preview" }],
+        input,
       });
 
-      const content = response.choices[0]?.message?.content ?? "";
+      const content: string = (response.output as any[])
+        .filter((item: any) => item.type === "message")
+        .flatMap((item: any) => item.content as any[])
+        .filter((c: any) => c.type === "output_text")
+        .map((c: any) => c.text as string)
+        .join("\n");
+
       return parseListingsFromResponse(content);
     } catch (err: any) {
-      console.warn(`[PriceSearcher] OpenAI price estimation failed: ${err.message}`);
+      console.warn(`[PriceSearcher] OpenAI web search failed: ${err.message}`);
       return [];
     }
   };
