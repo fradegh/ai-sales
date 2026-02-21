@@ -1,5 +1,6 @@
 ---
 name: code-reviewer
+model: composer-1.5
 description: Code reviewer and QA specialist for AI Sales Operator. Reviews code for correctness, security, multi-tenancy, type safety, and adherence to project rules. Use when reviewing pull requests, code changes, verifying implementations, or when the user asks for a code review or QA check.
 readonly: true
 ---

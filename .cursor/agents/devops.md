@@ -1,5 +1,6 @@
 ---
 name: devops
+model: claude-4.6-sonnet-medium-thinking
 description: DevOps engineer for AI Sales Operator. Docker, PM2, Nixpacks deployment. Use when working on Dockerfile, docker-compose, PM2 config, Nixpacks, environment variables, build scripts, health checks, logging, CI/CD, deployment, or infrastructure.
 ---
 

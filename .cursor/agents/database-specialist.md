@@ -1,5 +1,6 @@
 ---
 name: database-specialist
+model: claude-4.6-sonnet-medium-thinking
 description: Database specialist for AI Sales Operator. Drizzle ORM + PostgreSQL, schema design, migrations, storage layer. Use when working on database schema, migrations, tables, indexes, queries, storage methods, or any files in shared/schema.ts, server/storage.ts, server/database-storage.ts, or migrations/.
 ---
 

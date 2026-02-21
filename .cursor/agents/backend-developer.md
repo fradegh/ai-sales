@@ -1,5 +1,6 @@
 ---
 name: backend-developer
+model: claude-4.6-sonnet-medium-thinking
 description: Backend developer for AI Sales Operator. Node.js + Express + TypeScript + Drizzle ORM + BullMQ + Zod stack. Use when working on server-side code, API routes, database operations, workers, services, middleware, or any files under server/ or shared/.
 ---
 

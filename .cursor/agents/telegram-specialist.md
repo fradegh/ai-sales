@@ -1,5 +1,6 @@
 ---
 name: telegram-specialist
+model: claude-4.6-sonnet-medium-thinking
 description: Telegram integration specialist for AI Sales Operator. gramjs MTProto Personal API + Bot API adapters, QR/phone auth flows, multi-account session management, encrypted session storage. Use when working on Telegram auth, sessions, message send/receive, MTProto, gramjs, telegram-client-manager, telegram-personal-adapter, telegram-adapter, telegram-webhook, or any Telegram-related files.
 ---
 
