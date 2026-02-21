@@ -89,10 +89,16 @@ export function registerPhase0Routes(app: Express): void {
   // Check if flag is enabled (utility endpoint)
   app.get("/api/feature-flags/:name/check", requireAuth, requirePermission("VIEW_CONVERSATIONS"), async (req: Request, res: Response) => {
     try {
-      const tenant = await storage.getDefaultTenant();
+      // Use the authenticated user's tenantId, not the platform "default" tenant.
+      // getDefaultTenant() can return a different ID than the requesting user's
+      // tenant when the platform has multiple tenants, causing the lookup to miss
+      // the tenant-specific override stored by the toggle endpoint.
+      const tenantId: string | undefined =
+        (req as any).user?.tenantId ?? (req.session as any)?.tenantId ?? undefined;
+
       const enabled = await featureFlagService.isEnabled(
         req.params.name as any,
-        tenant?.id
+        tenantId
       );
       res.json({ name: req.params.name, enabled });
     } catch (error) {

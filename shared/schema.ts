@@ -571,13 +571,20 @@ export const lostDeals = pgTable("lost_deals", {
 // ============ PHASE 0: Feature Flags ============
 export const featureFlags = pgTable("feature_flags", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: text("name").notNull().unique(),
+  // name is NOT column-level unique: the composite partial indexes below
+  // replace it so that per-tenant overrides (name + tenantId) are allowed.
+  name: text("name").notNull(),
   description: text("description"),
   enabled: boolean("enabled").notNull().default(false),
   tenantId: varchar("tenant_id").references(() => tenants.id), // null = global flag
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => [
+  // Global flags: unique on name where tenant_id IS NULL
+  uniqueIndex("feature_flags_global_unique").on(table.name).where(sql`${table.tenantId} IS NULL`),
+  // Per-tenant overrides: unique on (name, tenant_id) where tenant_id IS NOT NULL
+  uniqueIndex("feature_flags_tenant_unique").on(table.name, table.tenantId).where(sql`${table.tenantId} IS NOT NULL`),
+]);
 
 // ============ PHASE 0: Audit Events ============
 export const auditEvents = pgTable("audit_events", {

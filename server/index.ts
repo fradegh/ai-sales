@@ -23,6 +23,7 @@ import type { Worker } from "bullmq";
 import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
+import { featureFlagService } from "./services/feature-flags";
 
 let maxPersonalProcess: ChildProcess | null = null;
 let podzamenuProcess: ChildProcess | null = null;
@@ -140,6 +141,9 @@ app.use((req, res, next) => {
     async () => {
       log(`serving on port ${port}`);
       
+      // Load persisted feature flags from DB into in-memory cache
+      await featureFlagService.initFromDb();
+
       // Bootstrap platform owner (idempotent)
       try {
         const ownerResult = await bootstrapPlatformOwner();

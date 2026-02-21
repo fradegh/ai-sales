@@ -1,11 +1,9 @@
-import type { FeatureFlag, InsertFeatureFlag, FeatureFlagName, FEATURE_FLAG_NAMES } from "@shared/schema";
+import type { FeatureFlag, InsertFeatureFlag, FeatureFlagName } from "@shared/schema";
+import { featureFlags } from "@shared/schema";
+import { db } from "../db";
+import { sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
-import * as fs from "fs";
-import * as path from "path";
 
-const FLAGS_FILE = "./feature_flags.json";
-
-// Default feature flag configurations
 const DEFAULT_FLAGS: Record<FeatureFlagName, { description: string; enabled: boolean }> = {
   AI_SUGGESTIONS_ENABLED: {
     description: "Enable AI-powered response suggestions",
@@ -58,17 +56,19 @@ const DEFAULT_FLAGS: Record<FeatureFlagName, { description: string; enabled: boo
 };
 
 class FeatureFlagService {
+  /** In-memory write-through cache: key = getKey(name, tenantId) */
   private flags: Map<string, FeatureFlag> = new Map();
-  private initialized = false;
 
   constructor() {
-    this.initializeDefaultFlags();
-    this.loadFromFile();
+    this.seedDefaults();
   }
 
-  private initializeDefaultFlags(): void {
-    if (this.initialized) return;
+  // ---------------------------------------------------------------------------
+  // Startup
+  // ---------------------------------------------------------------------------
 
+  /** Seed hard-coded defaults into the in-memory map (synchronous). */
+  private seedDefaults(): void {
     for (const [name, config] of Object.entries(DEFAULT_FLAGS)) {
       const flag: FeatureFlag = {
         id: randomUUID(),
@@ -81,59 +81,78 @@ class FeatureFlagService {
       };
       this.flags.set(this.getKey(name, null), flag);
     }
-    this.initialized = true;
   }
 
-  private loadFromFile(): void {
+  /**
+   * Load persisted flags from the DB and merge them into the in-memory cache,
+   * overwriting defaults with stored values.  Should be awaited at server
+   * startup before requests are served.
+   */
+  async initFromDb(): Promise<void> {
     try {
-      if (fs.existsSync(FLAGS_FILE)) {
-        const data = fs.readFileSync(FLAGS_FILE, "utf-8");
-        const savedFlags = JSON.parse(data) as Record<string, { enabled: boolean }>;
-        
-        for (const [key, value] of Object.entries(savedFlags)) {
-          const existing = this.flags.get(key);
-          if (existing) {
-            existing.enabled = value.enabled;
-            existing.updatedAt = new Date();
-          }
-        }
-        console.log("[FeatureFlags] Loaded saved flags from file");
+      const rows = await db.select().from(featureFlags);
+      for (const row of rows) {
+        this.flags.set(this.getKey(row.name, row.tenantId), {
+          ...row,
+          createdAt: new Date(row.createdAt),
+          updatedAt: new Date(row.updatedAt),
+        });
       }
+      console.log(`[FeatureFlags] Loaded ${rows.length} flag(s) from DB`);
     } catch (err) {
-      console.error("[FeatureFlags] Failed to load flags from file:", err);
+      console.error("[FeatureFlags] DB load failed — using in-memory defaults:", err);
     }
   }
 
-  private saveToFile(): void {
-    try {
-      const toSave: Record<string, { enabled: boolean }> = {};
-      this.flags.forEach((flag, key) => {
-        toSave[key] = { enabled: flag.enabled };
-      });
-      fs.writeFileSync(FLAGS_FILE, JSON.stringify(toSave, null, 2));
-    } catch (err) {
-      console.error("[FeatureFlags] Failed to save flags to file:", err);
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
 
   private getKey(name: string, tenantId: string | null): string {
     return tenantId ? `${tenantId}:${name}` : `global:${name}`;
   }
+
+  /**
+   * Upsert a flag row to the DB.
+   * Uses two separate partial unique indexes (migration 0013) to handle the
+   * nullable tenantId: global rows conflict on (name) WHERE tenant_id IS NULL,
+   * per-tenant rows conflict on (name, tenant_id) WHERE tenant_id IS NOT NULL.
+   */
+  private async persistToDb(flag: FeatureFlag): Promise<void> {
+    try {
+      if (flag.tenantId === null) {
+        await db.execute(sql`
+          INSERT INTO feature_flags (id, name, description, enabled, tenant_id, created_at, updated_at)
+          VALUES (${flag.id}, ${flag.name}, ${flag.description}, ${flag.enabled}, NULL, NOW(), NOW())
+          ON CONFLICT (name) WHERE tenant_id IS NULL
+          DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()
+        `);
+      } else {
+        await db.execute(sql`
+          INSERT INTO feature_flags (id, name, description, enabled, tenant_id, created_at, updated_at)
+          VALUES (${flag.id}, ${flag.name}, ${flag.description}, ${flag.enabled}, ${flag.tenantId}, NOW(), NOW())
+          ON CONFLICT (name, tenant_id) WHERE tenant_id IS NOT NULL
+          DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()
+        `);
+      }
+    } catch (err) {
+      console.error("[FeatureFlags] DB persist failed:", err);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
 
   async isEnabled(name: FeatureFlagName, tenantId?: string): Promise<boolean> {
     return this.isEnabledSync(name, tenantId);
   }
 
   isEnabledSync(name: string, tenantId?: string): boolean {
-    // First check tenant-specific flag
     if (tenantId) {
       const tenantFlag = this.flags.get(this.getKey(name, tenantId));
-      if (tenantFlag) {
-        return tenantFlag.enabled;
-      }
+      if (tenantFlag) return tenantFlag.enabled;
     }
-    
-    // Fall back to global flag
     const globalFlag = this.flags.get(this.getKey(name, null));
     return globalFlag?.enabled ?? false;
   }
@@ -149,11 +168,9 @@ class FeatureFlagService {
   async getAllFlags(tenantId?: string): Promise<FeatureFlag[]> {
     const result: FeatureFlag[] = [];
     const seenNames = new Set<string>();
-    const allFlags = Array.from(this.flags.values());
 
-    // Get tenant-specific flags first
     if (tenantId) {
-      for (const flag of allFlags) {
+      for (const flag of this.flags.values()) {
         if (flag.tenantId === tenantId) {
           result.push(flag);
           seenNames.add(flag.name);
@@ -161,8 +178,7 @@ class FeatureFlagService {
       }
     }
 
-    // Add global flags that aren't overridden
-    for (const flag of allFlags) {
+    for (const flag of this.flags.values()) {
       if (flag.tenantId === null && !seenNames.has(flag.name)) {
         result.push(flag);
       }
@@ -175,25 +191,20 @@ class FeatureFlagService {
     const key = this.getKey(name, tenantId ?? null);
     const existing = this.flags.get(key);
 
-    if (existing) {
-      const updated = { ...existing, enabled, updatedAt: new Date() };
-      this.flags.set(key, updated);
-      this.saveToFile();
-      return updated;
-    }
+    const flag: FeatureFlag = existing
+      ? { ...existing, enabled, updatedAt: new Date() }
+      : {
+          id: randomUUID(),
+          name,
+          description: DEFAULT_FLAGS[name as FeatureFlagName]?.description ?? null,
+          enabled,
+          tenantId: tenantId ?? null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
 
-    // Create new tenant-specific flag
-    const flag: FeatureFlag = {
-      id: randomUUID(),
-      name,
-      description: DEFAULT_FLAGS[name as FeatureFlagName]?.description || null,
-      enabled,
-      tenantId: tenantId ?? null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
     this.flags.set(key, flag);
-    this.saveToFile();
+    await this.persistToDb(flag);
     return flag;
   }
 
@@ -208,12 +219,12 @@ class FeatureFlagService {
       updatedAt: new Date(),
     };
     this.flags.set(this.getKey(flag.name, flag.tenantId), flag);
+    await this.persistToDb(flag);
     return flag;
   }
 
   async deleteFlag(id: string): Promise<boolean> {
-    const entries = Array.from(this.flags.entries());
-    for (const [key, flag] of entries) {
+    for (const [key, flag] of this.flags.entries()) {
       if (flag.id === id) {
         this.flags.delete(key);
         return true;
@@ -223,10 +234,8 @@ class FeatureFlagService {
   }
 }
 
-// Singleton instance
 export const featureFlagService = new FeatureFlagService();
 
-// Convenience function for dynamic imports
 export function isFeatureEnabled(name: string, tenantId?: string): boolean {
   return featureFlagService.isEnabledSync(name, tenantId);
 }
