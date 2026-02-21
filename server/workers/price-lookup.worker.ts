@@ -509,6 +509,50 @@ async function lookupPricesByFallback(
 
   // Use mock if all external sources failed (but do NOT save mock to DB)
   if (!priceResult) {
+    // Try OpenAI web search before falling back to mock
+    const webSearchOem = searchFallback.gearboxModel ?? searchQuery;
+    const webSearchModel = searchFallback.gearboxModel ?? null;
+    console.log(`[PriceLookupWorker] Fallback: trying OpenAI web search for "${webSearchOem}"`);
+    try {
+      const webResult = await searchUsedTransmissionPrice(webSearchOem, webSearchModel, "unknown");
+      if (webResult.source === "openai_web_search") {
+        console.log(
+          `[PriceLookupWorker] Fallback: OpenAI web search returned ${webResult.listingsCount} listings ` +
+            `(${webResult.minPrice}–${webResult.maxPrice} RUB)`
+        );
+        const marginPct = priceSettings.marginPct ?? -25;
+        const roundTo = priceSettings.roundTo ?? 100;
+        const salePrice = Math.max(
+          Math.round((webResult.avgPrice * (1 + marginPct / 100)) / roundTo) * roundTo,
+          0
+        );
+        const snapshot = await storage.createPriceSnapshot({
+          tenantId,
+          oem: searchKey,
+          source: webResult.source,
+          minPrice: salePrice,
+          maxPrice: salePrice,
+          avgPrice: salePrice,
+          marketMinPrice: webResult.minPrice,
+          marketMaxPrice: webResult.maxPrice,
+          marketAvgPrice: webResult.avgPrice,
+          salePrice,
+          marginPct,
+          searchKey,
+          currency: "RUB",
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          raw: { ...webResult } as any,
+        });
+        await createPriceSuggestion(tenantId, conversationId, snapshot, displayLabel, null);
+        return;
+      }
+      console.log(
+        `[PriceLookupWorker] Fallback: OpenAI web search returned not_found for "${webSearchOem}", falling back to mock`
+      );
+    } catch (err: any) {
+      console.warn(`[PriceLookupWorker] Fallback: OpenAI web search error: ${err.message}`);
+    }
+
     console.log(`[PriceLookupWorker] Fallback: all sources exhausted, using mock (not saved)`);
     const mockResult = await new MockSource().fetchPrices(searchQuery, gearboxType);
     const marginPct = priceSettings.marginPct ?? -25;
