@@ -1,9 +1,12 @@
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  WASocket,
-} from "@whiskeysockets/baileys";
+import type { WASocket } from "@whiskeysockets/baileys";
+
+let _baileys: typeof import("@whiskeysockets/baileys") | null = null;
+async function getBaileys() {
+  if (!_baileys) {
+    _baileys = await import("@whiskeysockets/baileys");
+  }
+  return _baileys;
+}
 import type { ChannelAdapter, ParsedIncomingMessage, ChannelSendResult } from "./channel-adapter";
 import type { ChannelType } from "@shared/schema";
 import { featureFlagService } from "./feature-flags";
@@ -257,6 +260,7 @@ export class WhatsAppPersonalAdapter implements ChannelAdapter {
         fs.mkdirSync(AUTH_DIR, { recursive: true });
       }
 
+      const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = await getBaileys();
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
       const { version, isLatest } = await fetchLatestBaileysVersion();
       
@@ -510,6 +514,7 @@ export class WhatsAppPersonalAdapter implements ChannelAdapter {
         fs.mkdirSync(AUTH_DIR, { recursive: true });
       }
 
+      const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } = await getBaileys();
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
       const { version, isLatest } = await fetchLatestBaileysVersion();
       
