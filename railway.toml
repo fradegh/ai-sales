@@ -4,5 +4,5 @@ nixpacksConfigPath = "nixpacks.toml"
 
 [deploy]
 startCommand = "npm run db:migrate && npm run start"
-healthcheckPath = "/api/health"
+healthcheckPath = "/health"
 healthcheckTimeout = 300
