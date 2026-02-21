@@ -51,7 +51,8 @@ const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
     path: "/",
   },
   size: 64,
-  getCsrfTokenFromRequest: (req: Request) => req.headers["x-csrf-token"],
+  getCsrfTokenFromRequest: (req: Request) =>
+    req.headers?.["x-csrf-token"] as string | undefined,
   skipCsrfProtection: (req: Request) =>
     WEBHOOK_PREFIXES.some((p) => req.path.startsWith(p)),
 });

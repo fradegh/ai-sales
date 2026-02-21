@@ -12,6 +12,7 @@ import { auditLog } from "./services/audit-log";
 import { webhookRateLimiter } from "./middleware/rate-limiter";
 import { registerAuthRoutes } from "./routes/auth-api";
 import { getSession } from "./session";
+import cookieParser from "cookie-parser";
 import { WhatsAppPersonalAdapter } from "./services/whatsapp-personal-adapter";
 import { requireAuth, requirePermission } from "./middleware/rbac";
 import { requireActiveSubscription } from "./middleware/subscription";
@@ -38,6 +39,10 @@ export async function registerRoutes(
   createTrackedApp(app);
   
   app.use(getSession());
+  // cookie-parser must be registered after express-session (session parses its
+  // own cookie internally and must not see it decoded first) and before csrf-csrf
+  // (doubleCsrf reads req.cookies[cookieName] directly).
+  app.use(cookieParser());
 
   // ============ CSRF PROTECTION ============
   // Applied after session (cookie ordering) but before every route.
