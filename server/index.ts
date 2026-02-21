@@ -16,11 +16,18 @@ import { pool } from "./db";
 import { closeQueue } from "./services/message-queue";
 import { closeVehicleLookupQueue } from "./services/vehicle-lookup-queue";
 import { closePriceLookupQueue } from "./services/price-lookup-queue";
+import { startVehicleLookupWorker } from "./workers/vehicle-lookup.worker";
+import { startPriceLookupWorker } from "./workers/price-lookup.worker";
+import { startWorker as startMessageSendWorker } from "./workers/message-send.worker";
+import type { Worker } from "bullmq";
 import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
 
 let maxPersonalProcess: ChildProcess | null = null;
+let vehicleLookupWorker: Worker | null = null;
+let priceLookupWorker: Worker | null = null;
+let messageSendWorker: Worker | null = null;
 
 // Validate configuration on startup
 const config = validateConfig();
@@ -160,6 +167,12 @@ app.use((req, res, next) => {
       
       // Auto-start Max Personal Python service
       startMaxPersonalService();
+
+      // Start BullMQ workers
+      vehicleLookupWorker = await startVehicleLookupWorker();
+      priceLookupWorker = await startPriceLookupWorker();
+      messageSendWorker = await startMessageSendWorker();
+      log("BullMQ workers started", "startup");
     },
   );
 })();
@@ -295,7 +308,15 @@ async function gracefulShutdown(signal: string): Promise<void> {
     });
   });
 
-  // Step 3: Close BullMQ queue connections (queues live in this process)
+  // Step 3a: Close BullMQ workers (stop accepting new jobs, drain active ones)
+  await Promise.allSettled([
+    vehicleLookupWorker?.close(),
+    priceLookupWorker?.close(),
+    messageSendWorker?.close(),
+  ]);
+  log("BullMQ workers closed", "shutdown");
+
+  // Step 3b: Close BullMQ queue connections
   await Promise.allSettled([
     closeQueue(),
     closeVehicleLookupQueue(),
