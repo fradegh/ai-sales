@@ -22,7 +22,7 @@
 -- - Case-insensitive: uses LOWER(email)
 -- - Partial: WHERE email IS NOT NULL (allows multiple NULLs for OIDC users without email)
 -- - CONCURRENTLY: no exclusive lock, minimal production impact
-CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS users_email_unique_lower_idx 
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_lower_idx 
 ON users (LOWER(email)) 
 WHERE email IS NOT NULL;
 

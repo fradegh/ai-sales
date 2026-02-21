@@ -5,7 +5,7 @@
 -- SELECT * FROM subscription_grants 
 -- WHERE tenant_id = ? AND revoked_at IS NULL AND starts_at <= now AND ends_at >= now
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS subscription_grants_active_lookup_idx 
+CREATE INDEX IF NOT EXISTS subscription_grants_active_lookup_idx 
 ON subscription_grants (tenant_id, revoked_at, ends_at, starts_at);
 
 -- Index order rationale:
