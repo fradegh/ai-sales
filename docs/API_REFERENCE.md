@@ -23,6 +23,9 @@
   - [Conversions](#conversions)
   - [Lost Deals](#lost-deals)
   - [Vehicle & Price Lookup](#vehicle--price-lookup)
+  - [Message Templates](#message-templates)
+  - [Payment Methods](#payment-methods)
+  - [Agent Settings](#agent-settings)
   - [Channel Management](#channel-management)
   - [Telegram Personal](#telegram-personal)
   - [WhatsApp Personal](#whatsapp-personal)
@@ -715,7 +718,7 @@ Generate an AI reply suggestion for the latest customer message.
 {
   "suggestionId": "uuid",
   "replyText": "string",
-  "intent": "price | availability | shipping | return | discount | complaint | other | null",
+  "intent": "price | availability | shipping | return | discount | complaint | other | photo_request | price_objection | ready_to_buy | needs_manual_quote | invalid_vin | marking_provided | payment_blocked | warranty_question | want_visit | what_included | vehicle_id_request | gearbox_tag_request | gearbox_tag_retry | null",
   "confidence": {
     "total": 0.85,
     "similarity": 0.90,
@@ -794,7 +797,7 @@ Get decision engine thresholds.
   "tEscalate": 0.40,
   "autosendAllowed": false,
   "intentsAutosendAllowed": ["price", "availability", "shipping", "other"],
-  "intentsForceHandoff": ["discount", "complaint"]
+  "intentsForceHandoff": ["discount", "complaint", "photo_request", "needs_manual_quote", "want_visit"]
 }
 ```
 
@@ -1008,7 +1011,7 @@ Intent performance analytics.
     }
   ],
   "totalConversations": 120,
-  "totalIntents": 7
+  "totalIntents": 17
 }
 ```
 
@@ -1191,6 +1194,295 @@ Get price history snapshots for a conversation.
 
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CONVERSATIONS")`
 - **Response 200:** `{ "snapshots": [...], "oem": "string | null" }`
+
+---
+
+### Message Templates
+
+Tenant-scoped message templates used by the price-lookup worker and managed in the **Шаблоны** tab of the Settings page (`/settings`). Templates support `{{variable_name}}` substitution.
+
+**UI:** `client/src/pages/settings.tsx` → `TemplatesTab` component
+- `GET /api/templates` — fetched on tab mount via `useQuery({ queryKey: ["/api/templates"] })`
+- `POST /api/templates` — create via Sheet form
+- `PATCH /api/templates/:id` — edit name/content or toggle `isActive` switch
+- `DELETE /api/templates/:id` — delete with AlertDialog confirm
+
+**Template types:**
+
+| Type | Variables available |
+|------|---------------------|
+| `price_result` | `{{transmission_model}}`, `{{oem}}`, `{{min_price}}`, `{{max_price}}`, `{{avg_price}}`, `{{origin}}`, `{{car_brand}}`, `{{date}}` |
+| `payment_options` | none (free-form) |
+| `tag_request` | none (free-form) |
+| `not_found` | none (free-form) |
+
+#### GET `/api/templates`
+
+List all message templates for the authenticated tenant.
+
+- **Auth:** `requireAuth`, `requirePermission("VIEW_CONVERSATIONS")`
+- **Response 200:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "tenantId": "uuid",
+    "type": "price_result",
+    "name": "Результат поиска цены",
+    "content": "Нашёл для вас контрактную {{transmission_model}} (OEM: {{oem}}).\n\n💰 Стоимость: {{min_price}} — {{max_price}} ₽\n📊 Средняя цена: {{avg_price}} ₽\n\nЕсть в наличии. Готов ответить на все вопросы!",
+    "isActive": true,
+    "order": 0,
+    "createdAt": "2026-02-21T10:00:00.000Z",
+    "updatedAt": "2026-02-21T10:00:00.000Z"
+  }
+]
+```
+
+#### POST `/api/templates`
+
+Create a message template.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Request Body:**
+
+```json
+{
+  "type": "price_result | price_options | payment_options | tag_request | not_found",
+  "name": "string (1–255 chars)",
+  "content": "string (min 1)",
+  "isActive": true,
+  "order": 0
+}
+```
+
+- **Response 201:** Created template object
+
+#### POST `/api/templates/preview`
+
+Render a template with sample variable values. Accepts either a saved template ID or raw content.
+
+- **Auth:** `requireAuth`, `requirePermission("VIEW_CONVERSATIONS")`
+- **Request Body (option A — by ID):** `{ "templateId": "uuid" }`
+- **Request Body (option B — inline):** `{ "content": "Ваш запрос: {{transmission_model}}" }`
+- **Response 200:**
+
+```json
+{
+  "rendered": "Ваш запрос: АКПП U760E"
+}
+```
+
+Sample values used: `transmission_model=АКПП U760E`, `oem=3530060360`, `min_price=45 000`, `max_price=65 000`, `avg_price=55 000`, `origin=Япония`, `car_brand=Toyota Camry`, `date=<today>`.
+
+#### PATCH `/api/templates/:id`
+
+Update a template. Only fields provided are changed.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Request Body:**
+
+```json
+{
+  "name": "string (optional)",
+  "content": "string (optional)",
+  "isActive": true,
+  "order": 0
+}
+```
+
+- **Response 200:** Updated template object
+- **Response 404:** Template not found or does not belong to tenant
+
+#### DELETE `/api/templates/:id`
+
+Delete a template permanently.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Response 200:** `{ "success": true }`
+- **Response 404:** Template not found or does not belong to tenant
+
+---
+
+### Payment Methods
+
+Tenant-scoped payment options managed in the **Оплата** tab of the Settings page (`/settings`) and shown as a second AI suggestion alongside price replies. When any active payment methods exist, the price-lookup worker automatically creates a supplementary suggestion formatted as:
+
+**UI:** `client/src/pages/settings.tsx` → `PaymentMethodsTab` component
+- `GET /api/payment-methods` — fetched on tab mount via `useQuery({ queryKey: ["/api/payment-methods"] })`
+- `POST /api/payment-methods` — create via Dialog form
+- `PATCH /api/payment-methods/:id` — edit title/description or toggle `isActive` switch
+- `PATCH /api/payment-methods/reorder` — reorder via ChevronUp/ChevronDown buttons
+- `DELETE /api/payment-methods/:id` — delete with AlertDialog confirm
+
+```
+💳 Варианты оплаты:
+
+• Наличные при получении
+• Перевод на карту
+  Сбербанк / Т-Банк / ВТБ
+```
+
+#### GET `/api/payment-methods`
+
+List all payment methods for the authenticated tenant, ordered by `order` then `createdAt`.
+
+- **Auth:** `requireAuth`, `requirePermission("VIEW_CONVERSATIONS")`
+- **Response 200:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "tenantId": "uuid",
+    "title": "Наличные при получении",
+    "description": null,
+    "isActive": true,
+    "order": 0,
+    "createdAt": "2026-02-21T10:00:00.000Z"
+  }
+]
+```
+
+#### POST `/api/payment-methods`
+
+Create a payment method.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Request Body:**
+
+```json
+{
+  "title": "string (1–255 chars)",
+  "description": "string (optional)",
+  "isActive": true,
+  "order": 0
+}
+```
+
+- **Response 201:** Created payment method object
+
+#### PATCH `/api/payment-methods/reorder`
+
+Bulk-update the `order` field for multiple payment methods in one request.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Request Body:** `[{ "id": "uuid", "order": 0 }, { "id": "uuid", "order": 1 }]` (min 1 item)
+- **Response 200:** `{ "success": true }`
+
+#### PATCH `/api/payment-methods/:id`
+
+Update a payment method. Only fields provided are changed.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Request Body:**
+
+```json
+{
+  "title": "string (optional)",
+  "description": "string | null (optional)",
+  "isActive": true,
+  "order": 0
+}
+```
+
+- **Response 200:** Updated payment method object
+- **Response 404:** Payment method not found or does not belong to tenant
+
+#### DELETE `/api/payment-methods/:id`
+
+Delete a payment method permanently.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Response 200:** `{ "success": true }`
+- **Response 404:** Payment method not found or does not belong to tenant
+
+---
+
+### Agent Settings
+
+Per-tenant AI agent configuration. Controls company identity, response scripts, and the AI system prompt. One settings row per tenant; the row is created on the first PUT call.
+
+All endpoints are in `server/routes/tenant-config.routes.ts`.
+
+#### GET `/api/agent-settings`
+
+Retrieve the current tenant's agent settings.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Response 200 (settings exist):**
+
+```json
+{
+  "id": "uuid",
+  "tenantId": "uuid",
+  "companyName": "Название компании",
+  "specialization": "Чем занимается",
+  "warehouseCity": "Москва",
+  "warrantyMonths": 12,
+  "warrantyKm": 20000,
+  "installDays": 14,
+  "qrDiscountPercent": 3,
+  "systemPrompt": null,
+  "objectionPayment": "Мы работаем только по предоплате...",
+  "objectionOnline": "Оплата через наш сайт полностью безопасна...",
+  "closingScript": "Оформляем заказ?",
+  "customFacts": {},
+  "updatedAt": "2026-02-21T12:00:00.000Z"
+}
+```
+
+- **Response 200 (no settings yet):** `{}`
+
+#### PUT `/api/agent-settings`
+
+Create or update agent settings for the current tenant. All body fields are optional — only provided fields are written.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
+- **Request body (all fields optional):**
+
+```json
+{
+  "companyName": "string | null",
+  "specialization": "string | null",
+  "warehouseCity": "string | null",
+  "warrantyMonths": "integer | null",
+  "warrantyKm": "integer | null",
+  "installDays": "integer | null",
+  "qrDiscountPercent": "0–100 | null",
+  "systemPrompt": "string (max 10 000 chars) | null",
+  "objectionPayment": "string (max 2 000 chars) | null",
+  "objectionOnline": "string (max 2 000 chars) | null",
+  "closingScript": "string (max 2 000 chars) | null",
+  "customFacts": "object | null",
+  "mileageLow": "integer | null",
+  "mileageMid": "integer | null",
+  "mileageHigh": "integer | null"
+}
+```
+
+- **Response 200:** Updated `TenantAgentSettings` object
+- **Response 400:** Validation error
+
+**How the settings affect the AI agent:**
+
+The Decision Engine reads `tenant_agent_settings` at the start of every `generateWithDecisionEngine()` call. The values are used to build the system prompt via `buildSystemPrompt(tenant, agentSettings)`:
+
+| Field | Usage |
+|-------|-------|
+| `systemPrompt` | If set, replaces `DEFAULT_SYSTEM_PROMPT` as the base instructions |
+| `companyName` | Injected into `ДАННЫЕ КОМПАНИИ` block (falls back to `tenant.name`) |
+| `specialization` | Added to company facts block |
+| `warehouseCity` | Added to company facts block |
+| `warrantyMonths` / `warrantyKm` | Added to company facts block |
+| `installDays` | Added to company facts block |
+| `qrDiscountPercent` | Added to company facts block |
+| `objectionPayment` | Added to `СКРИПТЫ ОТВЕТОВ` block |
+| `objectionOnline` | Added to `СКРИПТЫ ОТВЕТОВ` block |
+| `closingScript` | Added to `СКРИПТЫ ОТВЕТОВ` block |
+| `mileageLow` | Mileage threshold for quality tier in `price_options` two-step dialog (default 60 000 km) |
+| `mileageMid` | Mileage threshold for mid/budget tier split in `price_options` dialog (default 90 000 km) |
+| `mileageHigh` | Informational upper bound for budget tier display (default 90 000 km) |
 
 ---
 

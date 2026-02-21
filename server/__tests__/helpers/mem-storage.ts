@@ -43,6 +43,8 @@ import {
   type PriceSnapshot, type InsertPriceSnapshot,
   type InternalPrice, type InsertInternalPrice,
   type TelegramSession, type InsertTelegramSession,
+  type MessageTemplate, type InsertMessageTemplate,
+  type PaymentMethod, type InsertPaymentMethod,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import type { IStorage } from "../../storage";
@@ -1440,7 +1442,11 @@ export class MemStorage implements IStorage {
     return { ...data, id, createdAt: new Date() } as PriceSnapshot;
   }
 
-  async getLatestPriceSnapshot(_tenantId: string, _oem: string, _maxAgeMinutes: number): Promise<PriceSnapshot | undefined> {
+  async getGlobalPriceSnapshot(_oem: string): Promise<PriceSnapshot | null> {
+    return null;
+  }
+
+  async getLatestPriceSnapshot(_oem: string, _maxAgeDays?: number): Promise<PriceSnapshot | undefined> {
     return undefined;
   }
 
@@ -1507,5 +1513,109 @@ export class MemStorage implements IStorage {
 
   async deleteTelegramAccount(id: string): Promise<boolean> {
     return this.telegramAccountsMap.delete(id);
+  }
+
+  // ─── Message Templates (stubs) ───────────────────────────────────────────
+
+  private messageTemplatesMap: Map<string, MessageTemplate> = new Map();
+
+  async getMessageTemplatesByTenant(tenantId: string): Promise<MessageTemplate[]> {
+    return Array.from(this.messageTemplatesMap.values()).filter(t => t.tenantId === tenantId);
+  }
+
+  async getActiveMessageTemplateByType(tenantId: string, type: string): Promise<MessageTemplate | undefined> {
+    return Array.from(this.messageTemplatesMap.values())
+      .find(t => t.tenantId === tenantId && t.type === type && t.isActive);
+  }
+
+  async getMessageTemplate(id: string): Promise<MessageTemplate | undefined> {
+    return this.messageTemplatesMap.get(id);
+  }
+
+  async createMessageTemplate(data: InsertMessageTemplate): Promise<MessageTemplate> {
+    const id = randomUUID();
+    const now = new Date();
+    const tpl: MessageTemplate = {
+      id,
+      tenantId: data.tenantId,
+      type: data.type,
+      name: data.name,
+      content: data.content,
+      isActive: data.isActive ?? true,
+      order: data.order ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.messageTemplatesMap.set(id, tpl);
+    return tpl;
+  }
+
+  async updateMessageTemplate(id: string, data: Partial<InsertMessageTemplate>): Promise<MessageTemplate | undefined> {
+    const existing = this.messageTemplatesMap.get(id);
+    if (!existing) return undefined;
+    const updated: MessageTemplate = { ...existing, ...data, updatedAt: new Date() };
+    this.messageTemplatesMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteMessageTemplate(id: string): Promise<boolean> {
+    return this.messageTemplatesMap.delete(id);
+  }
+
+  async seedDefaultTemplates(_tenantId: string): Promise<void> {
+    // no-op in tests
+  }
+
+  // ─── Payment Methods (stubs) ─────────────────────────────────────────────
+
+  private paymentMethodsMap: Map<string, PaymentMethod> = new Map();
+
+  async getPaymentMethodsByTenant(tenantId: string): Promise<PaymentMethod[]> {
+    return Array.from(this.paymentMethodsMap.values()).filter(m => m.tenantId === tenantId);
+  }
+
+  async getActivePaymentMethods(tenantId: string): Promise<PaymentMethod[]> {
+    return Array.from(this.paymentMethodsMap.values())
+      .filter(m => m.tenantId === tenantId && m.isActive);
+  }
+
+  async getPaymentMethod(id: string): Promise<PaymentMethod | undefined> {
+    return this.paymentMethodsMap.get(id);
+  }
+
+  async createPaymentMethod(data: InsertPaymentMethod): Promise<PaymentMethod> {
+    const id = randomUUID();
+    const method: PaymentMethod = {
+      id,
+      tenantId: data.tenantId,
+      title: data.title,
+      description: data.description ?? null,
+      isActive: data.isActive ?? true,
+      order: data.order ?? 0,
+      createdAt: new Date(),
+    };
+    this.paymentMethodsMap.set(id, method);
+    return method;
+  }
+
+  async updatePaymentMethod(id: string, data: Partial<InsertPaymentMethod>): Promise<PaymentMethod | undefined> {
+    const existing = this.paymentMethodsMap.get(id);
+    if (!existing) return undefined;
+    const updated: PaymentMethod = { ...existing, ...data } as PaymentMethod;
+    this.paymentMethodsMap.set(id, updated);
+    return updated;
+  }
+
+  async deletePaymentMethod(id: string): Promise<boolean> {
+    return this.paymentMethodsMap.delete(id);
+  }
+
+  async reorderPaymentMethods(tenantId: string, updates: Array<{ id: string; order: number }>): Promise<void> {
+    for (const { id, order } of updates) {
+      const m = this.paymentMethodsMap.get(id);
+      if (m && m.tenantId === tenantId) {
+        this.paymentMethodsMap.set(id, { ...m, order });
+      }
+    }
   }
 }

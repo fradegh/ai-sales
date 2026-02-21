@@ -2,211 +2,68 @@ import { Worker, Job } from "bullmq";
 import { PriceLookupJobData, SearchFallback } from "../services/price-lookup-queue";
 import { getRedisConnectionConfig } from "../services/message-queue";
 import { storage } from "../storage";
-import type { PriceSource, PriceResult, GearboxType } from "../services/price-sources/types";
-import { detectGearboxType, GEARBOX_TYPE_SEARCH_TERM } from "../services/price-sources/types";
-import { AvitoSource } from "../services/price-sources/avito-source";
-import { DromSource } from "../services/price-sources/drom-source";
-import { WebSource } from "../services/price-sources/web-source";
-import { MockSource } from "../services/price-sources/mock-source";
+import type { GearboxType } from "../services/price-sources/types";
+import { identifyTransmissionByOem } from "../services/transmission-identifier";
+import { searchUsedTransmissionPrice } from "../services/price-searcher";
+import { renderTemplate, DEFAULT_TEMPLATES } from "../services/template-renderer";
+import type { PriceSnapshot, TenantAgentSettings } from "@shared/schema";
 
 const QUEUE_NAME = "price_lookup_queue";
 
-const SNAPSHOT_MAX_AGE_MINUTES = 60;
+// ─── Origin translation ───────────────────────────────────────────────────────
 
-const externalSources: PriceSource[] = [
-  new AvitoSource(),
-  new DromSource(),
-  new WebSource(),
-];
-const mockSource = new MockSource();
+const ORIGIN_LABELS: Record<string, string> = {
+  japan: "Япония",
+  europe: "Европа",
+  korea: "Корея",
+  usa: "США",
+  unknown: "",
+};
 
-interface PriceSettings {
-  marginPct?: number;
-  roundTo?: number;
-  priceNote?: string;
-  showMarketPrice?: boolean;
+function translateOrigin(origin: string | null | undefined): string {
+  return ORIGIN_LABELS[origin ?? ""] ?? "";
 }
 
-function applyCommercialLogic(
-  priceResult: PriceResult,
-  settings: PriceSettings
-): { salePrice: number; marginPct: number; priceNote: string | null } {
-  const marginPct = settings.marginPct ?? -25;
-  const roundTo = settings.roundTo ?? 100;
-  const salePrice =
-    Math.round((priceResult.avgPrice * (1 + marginPct / 100)) / roundTo) * roundTo;
-
-  return {
-    salePrice: Math.max(salePrice, 0),
-    marginPct,
-    priceNote: settings.priceNote ?? null,
-  };
+function formatMileageRange(min: number | null, max: number | null): string {
+  if (min === null && max === null) return "";
+  if (min === null) return `до ${max!.toLocaleString("ru-RU")} км`;
+  if (max === null) return `от ${min.toLocaleString("ru-RU")} км`;
+  return `${min.toLocaleString("ru-RU")} — ${max.toLocaleString("ru-RU")} км`;
 }
 
-function buildSearchQuery(oem: string | null, fallback?: SearchFallback): string {
-  if (oem) return oem;
-  if (!fallback) return "";
-  const parts: string[] = [];
-  if (fallback.gearboxModel) parts.push(fallback.gearboxModel);
-  if (fallback.make) parts.push(fallback.make);
-  if (fallback.model) parts.push(fallback.model);
-  return parts.join(" ");
+// ─── WS broadcast helper ──────────────────────────────────────────────────────
+
+function broadcastSuggestion(tenantId: string, conversationId: string, suggestionId: string) {
+  import("../services/websocket-server")
+    .then(({ realtimeService }) => {
+      realtimeService.broadcastNewSuggestion(tenantId, conversationId, suggestionId);
+    })
+    .catch(() => {
+      // Skip broadcast if import fails (worker runs as a separate process)
+    });
 }
 
-function buildSearchKey(oem: string | null, fallback?: SearchFallback): string {
-  if (oem) return oem;
-  if (!fallback) return "";
-  const parts = [
-    fallback.gearboxModel ?? "",
-    fallback.make ?? "",
-    fallback.model ?? "",
-    fallback.gearboxType,
-  ].filter(Boolean);
-  return parts.join("_");
-}
+// ─── Payment methods suggestion ───────────────────────────────────────────────
 
-function formatPriceSuggestion(
-  label: string,
-  salePrice: number,
-  marketAvg: number,
-  source: string,
-  updatedAt: Date,
-  priceNote: string | null,
-  showMarketPrice: boolean,
-  isFallback: boolean,
-  isModelOnly: boolean = false
-): string {
-  const timeStr = updatedAt.toLocaleString("ru-RU", {
-    timeZone: "Europe/Moscow",
-    hour: "2-digit",
-    minute: "2-digit",
-    day: "2-digit",
-    month: "2-digit",
-  });
-
-  let text: string;
-  if (isModelOnly) {
-    text = `Цена по модели ${label}: ${salePrice} ₽`;
-  } else if (isFallback) {
-    text = `Найдены варианты ${label}: ${salePrice} ₽`;
-  } else {
-    text = `Цена по OEM ${label}: ${salePrice} ₽`;
-  }
-  if (showMarketPrice && marketAvg !== salePrice) {
-    text += ` (рыночная ≈${marketAvg} ₽)`;
-  }
-  if (isFallback && !isModelOnly) {
-    text += `\n⚠️ Без точного OEM — цена приблизительная.`;
-  }
-  if (priceNote) {
-    text += `\n${priceNote}`;
-  }
-  text += `\nОбновлено: ${timeStr}. Источник: ${source}.`;
-  return text;
-}
-
-async function autoSaveToInternal(
+async function maybeCreatePaymentMethodsSuggestion(
   tenantId: string,
-  oem: string | null,
-  priceResult: PriceResult
+  conversationId: string
 ): Promise<void> {
-  if (!oem) return;
-  if (priceResult.source === "mock" || priceResult.source === "internal") return;
+  try {
+    const methods = await storage.getActivePaymentMethods(tenantId);
+    if (methods.length === 0) return;
 
-  let saved = 0;
-  for (const listing of priceResult.listings) {
-    try {
-      await storage.upsertInternalPrice({
-        tenantId,
-        oem,
-        price: listing.price,
-        currency: "RUB",
-        condition: listing.condition,
-        supplier: `${priceResult.source}:${listing.seller}`,
-      });
-      saved++;
-    } catch (err: any) {
-      console.warn(`[PriceLookupWorker] Failed to save internal price: ${err.message}`);
-    }
-  }
-  if (saved > 0) {
-    console.log(
-      `[PriceLookupWorker] Auto-saved ${saved} prices to internal_prices (source: ${priceResult.source})`
+    const lines = methods.map((m) =>
+      `• ${m.title}${m.description ? `\n  ${m.description}` : ""}`
     );
-  }
-}
-
-async function fetchFromExternalSources(
-  searchQuery: string,
-  gearboxType?: GearboxType
-): Promise<PriceResult | null> {
-  for (const src of externalSources) {
-    console.log(`[PriceLookupWorker] Trying source: ${src.name} for query "${searchQuery}" (gearbox: ${gearboxType ?? "auto"})`);
-    try {
-      const result = await src.fetchPrices(searchQuery, gearboxType);
-      if (result) {
-        console.log(`[PriceLookupWorker] Source ${src.name} returned ${result.listings.length} listings`);
-        return result;
-      }
-    } catch (error: any) {
-      console.warn(`[PriceLookupWorker] Source ${src.name} threw: ${error.message}`);
-    }
-  }
-  return null;
-}
-
-async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
-  const { tenantId, conversationId, oem, searchFallback, isModelOnly } = job.data;
-  const isFallbackMode = !oem && !!searchFallback && !isModelOnly;
-  const isModelOnlyMode = !!isModelOnly && !!searchFallback?.gearboxModel;
-
-  const searchQuery = buildSearchQuery(oem, searchFallback);
-  const searchKey = isModelOnlyMode
-    ? `model:${searchFallback!.gearboxModel}`
-    : buildSearchKey(oem, searchFallback);
-  const gearboxType: GearboxType | undefined = searchFallback?.gearboxType
-    ?? (oem ? undefined : undefined);
-
-  const displayLabel = isModelOnlyMode
-    ? `КПП ${searchFallback!.gearboxModel} ${searchFallback!.make ?? ""} ${searchFallback!.model ?? ""}`.trim()
-    : isFallbackMode
-      ? `${(searchFallback!.gearboxType ?? "").toUpperCase()} ${searchFallback!.make ?? ""} ${searchFallback!.model ?? ""}`.trim()
-      : oem!;
-
-  const modeLabel = isModelOnlyMode ? "MODEL_ONLY" : isFallbackMode ? "FALLBACK" : "OEM";
-  console.log(`[PriceLookupWorker] Running price lookup: ${modeLabel} mode, query="${searchQuery}", key="${searchKey}"`);
-
-  const tenant = await storage.getTenant(tenantId);
-  const templates = (tenant?.templates ?? {}) as Record<string, unknown>;
-  const priceSettings = (templates.priceSettings ?? {}) as PriceSettings;
-
-  let priceResult: PriceResult;
-
-  // Step 1: Check cached snapshot by searchKey
-  const cached = await storage.getLatestPriceSnapshot(tenantId, searchKey, SNAPSHOT_MAX_AGE_MINUTES);
-  if (cached) {
-    console.log(`[PriceLookupWorker] Using cached snapshot ${cached.id} for key "${searchKey}" (source: ${cached.source})`);
-
-    const salePrice = cached.avgPrice ?? 0;
-    const marketAvg = cached.marketAvgPrice ?? cached.avgPrice ?? 0;
-    const suggestedReply = formatPriceSuggestion(
-      displayLabel,
-      salePrice,
-      marketAvg,
-      cached.source,
-      cached.createdAt,
-      cached.priceNote ?? null,
-      priceSettings.showMarketPrice ?? false,
-      isFallbackMode,
-      isModelOnlyMode
-    );
+    const suggestedReply = `💳 Варианты оплаты:\n\n${lines.join("\n")}`;
 
     const suggestion = await storage.createAiSuggestion({
       conversationId,
       messageId: null,
       suggestedReply,
       intent: "price",
-      confidence: isModelOnlyMode ? 0.8 : isFallbackMode ? 0.6 : 0.8,
+      confidence: 0.9,
       needsApproval: true,
       needsHandoff: false,
       questionsToAsk: [],
@@ -217,91 +74,233 @@ async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
     });
 
     broadcastSuggestion(tenantId, conversationId, suggestion.id);
-    console.log(`[PriceLookupWorker] Created price suggestion ${suggestion.id} (cached)`);
-    return;
+    console.log(`[PriceLookupWorker] Created payment methods suggestion ${suggestion.id}`);
+  } catch (err: any) {
+    console.warn(`[PriceLookupWorker] Failed to create payment methods suggestion: ${err.message}`);
   }
+}
 
-  // Step 2: Check internal_prices (only when we have an OEM)
-  if (oem) {
-    const internalRows = await storage.getInternalPricesByOem(tenantId, oem);
-    if (internalRows.length > 0) {
-      const prices = internalRows.map((r) => r.price);
-      priceResult = {
-        minPrice: Math.min(...prices),
-        maxPrice: Math.max(...prices),
-        avgPrice: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
-        currency: "RUB",
-        listings: internalRows.map((r) => ({
-          title: `Internal: ${oem}`,
-          price: r.price,
-          condition: (r.condition as "contract" | "used" | "new") ?? "contract",
-          seller: r.supplier ?? "internal",
-          url: "",
-        })),
-        source: "internal",
-      };
-      console.log(`[PriceLookupWorker] Found ${internalRows.length} internal price(s) for OEM ${oem}`);
+// ─── Number formatting helpers ───────────────────────────────────────────────
+
+function formatPrice(value: number): string {
+  return value.toLocaleString("ru-RU");
+}
+
+function formatNumber(value: number): string {
+  return value.toLocaleString("ru-RU");
+}
+
+function formatDate(date: Date): string {
+  return date.toLocaleString("ru-RU", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
+// ─── Low-level suggestion record creator ─────────────────────────────────────
+
+async function createSuggestionRecord(
+  tenantId: string,
+  conversationId: string,
+  content: string,
+  intent: string = "price",
+  confidence: number = 0.8
+): Promise<void> {
+  const suggestion = await storage.createAiSuggestion({
+    conversationId,
+    messageId: null,
+    suggestedReply: content,
+    intent,
+    confidence,
+    needsApproval: true,
+    needsHandoff: false,
+    questionsToAsk: [],
+    usedSources: [],
+    status: "pending",
+    decision: "NEED_APPROVAL",
+    autosendEligible: false,
+  });
+  broadcastSuggestion(tenantId, conversationId, suggestion.id);
+  console.log(`[PriceLookupWorker] Created ${intent} suggestion ${suggestion.id}`);
+}
+
+// ─── Two-step price dialog (price_options → mileage_preference) ───────────────
+
+interface PriceSearchListing {
+  price: number;
+  mileage: number | null;
+}
+
+async function createPriceSuggestions(
+  tenantId: string,
+  conversationId: string,
+  snapshot: PriceSnapshot,
+  agentSettings: TenantAgentSettings | null
+): Promise<void> {
+  const raw = snapshot.raw as { listings?: PriceSearchListing[] } | null;
+  const listings: PriceSearchListing[] = raw?.listings ?? [];
+
+  const mileageLow = agentSettings?.mileageLow ?? 60000;
+  const mileageMid = agentSettings?.mileageMid ?? 90000;
+
+  const qualityListings = listings.filter(
+    (l) => l.mileage !== null && l.mileage <= mileageLow
+  );
+  const midListings = listings.filter(
+    (l) => l.mileage !== null && l.mileage > mileageLow && l.mileage <= mileageMid
+  );
+  const budgetListings = listings.filter(
+    (l) => l.mileage === null || l.mileage > mileageMid
+  );
+
+  const hasEnoughForTiers = qualityListings.length > 0 && budgetListings.length > 0;
+
+  if (hasEnoughForTiers) {
+    const budgetPrice = Math.min(...budgetListings.map((l) => l.price));
+    const budgetMileage = Math.max(
+      ...budgetListings.filter((l) => l.mileage !== null).map((l) => l.mileage!)
+    );
+    const qualityPrice = Math.min(...qualityListings.map((l) => l.price));
+    const qualityMileage = Math.min(
+      ...qualityListings.filter((l) => l.mileage !== null).map((l) => l.mileage!)
+    );
+
+    let midPrice: number;
+    let midMileage: number;
+    if (midListings.length > 0) {
+      midPrice = Math.min(...midListings.map((l) => l.price));
+      midMileage = Math.round(
+        midListings.reduce((s, l) => s + (l.mileage ?? 0), 0) / midListings.length
+      );
     } else {
-      priceResult = await fetchOrMock(searchQuery, oem, tenantId, gearboxType);
+      midPrice = Math.round((budgetPrice + qualityPrice) / 2);
+      midMileage = Math.round((budgetMileage + qualityMileage) / 2);
     }
+
+    const tpl = await storage.getActiveMessageTemplateByType(tenantId, "price_options");
+    const defaultPriceOptionsTpl = DEFAULT_TEMPLATES.find((t) => t.type === "price_options");
+    const templateContent = tpl?.content ?? defaultPriceOptionsTpl?.content ?? "";
+
+    const content = renderTemplate(templateContent, {
+      transmission_model: snapshot.modelName ?? snapshot.oem,
+      oem: snapshot.oem,
+      manufacturer: snapshot.manufacturer ?? "",
+      origin: translateOrigin(snapshot.origin),
+      budget_price: formatPrice(budgetPrice),
+      budget_mileage: formatNumber(budgetMileage),
+      mid_price: formatPrice(midPrice),
+      mid_mileage: formatNumber(midMileage),
+      quality_price: formatPrice(qualityPrice),
+      quality_mileage: formatNumber(qualityMileage),
+      listings_count: String(listings.length),
+      date: formatDate(new Date()),
+    });
+
+    await createSuggestionRecord(tenantId, conversationId, content, "price_options", 0.85);
   } else {
-    // Fallback: skip internal_prices (no OEM), go straight to external
-    priceResult = await fetchOrMock(searchQuery, oem, tenantId, gearboxType);
+    // Not enough listings for tiers — fall back to single price_result template
+    const content = await buildPriceReply({
+      tenantId,
+      snapshot,
+      displayLabel: snapshot.modelName ?? snapshot.oem,
+      oem: snapshot.oem,
+    });
+    await createSuggestionRecord(tenantId, conversationId, content, "price", 0.8);
   }
 
-  const { salePrice, marginPct, priceNote } = applyCommercialLogic(priceResult, priceSettings);
+  // Always create payment methods suggestion
+  await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
+}
 
-  const rawPayload =
-    priceResult.source === "mock"
-      ? [{ minPrice: priceResult.minPrice, maxPrice: priceResult.maxPrice, avgPrice: priceResult.avgPrice }]
-      : priceResult.listings.map((l) => ({
-          title: l.title,
-          price: l.price,
-          condition: l.condition,
-          seller: l.seller,
-          url: l.url,
-        }));
+// ─── Price reply builder ──────────────────────────────────────────────────────
 
-  const snapshot = await storage.createPriceSnapshot({
-    tenantId,
-    oem: oem ?? "",
-    source: priceResult.source,
-    minPrice: salePrice,
-    maxPrice: salePrice,
-    avgPrice: salePrice,
-    marketMinPrice: priceResult.minPrice,
-    marketMaxPrice: priceResult.maxPrice,
-    marketAvgPrice: priceResult.avgPrice,
-    salePrice,
-    marginPct,
-    priceNote,
-    searchKey,
-    raw: rawPayload,
+interface PriceReplyOptions {
+  tenantId: string;
+  snapshot: PriceSnapshot;
+  displayLabel: string;
+  oem: string | null;
+}
+
+async function buildPriceReply(opts: PriceReplyOptions): Promise<string> {
+  const { tenantId, snapshot, displayLabel, oem } = opts;
+
+  const salePrice = snapshot.avgPrice ?? 0;
+  const minPrice = snapshot.minPrice ?? salePrice;
+  const maxPrice = snapshot.maxPrice ?? salePrice;
+  const originLabel = translateOrigin(snapshot.origin);
+  const mileageRange = formatMileageRange(snapshot.mileageMin ?? null, snapshot.mileageMax ?? null);
+
+  const updatedAt = snapshot.createdAt;
+  const timeStr = updatedAt.toLocaleString("ru-RU", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
   });
 
-  console.log(
-    `[PriceLookupWorker] Created snapshot ${snapshot.id} for key "${searchKey}" ` +
-      `(source: ${priceResult.source}, market avg: ${priceResult.avgPrice}, sale: ${salePrice}${isModelOnlyMode ? ", MODEL_ONLY" : isFallbackMode ? ", FALLBACK" : ""})`
-  );
+  try {
+    const tpl = await storage.getActiveMessageTemplateByType(tenantId, "price_result");
+    if (tpl) {
+      const variables: Record<string, string | number> = {
+        transmission_model: snapshot.modelName ?? displayLabel,
+        oem: oem ?? displayLabel,
+        min_price: minPrice.toLocaleString("ru-RU"),
+        max_price: maxPrice.toLocaleString("ru-RU"),
+        avg_price: salePrice.toLocaleString("ru-RU"),
+        origin: originLabel,
+        manufacturer: snapshot.manufacturer ?? "",
+        car_brand: "",
+        date: timeStr,
+        mileage_min: snapshot.mileageMin != null ? snapshot.mileageMin.toLocaleString("ru-RU") : "",
+        mileage_max: snapshot.mileageMax != null ? snapshot.mileageMax.toLocaleString("ru-RU") : "",
+        mileage_range: mileageRange,
+        listings_count: snapshot.listingsCount ?? 0,
+      };
+      return renderTemplate(tpl.content, variables);
+    }
+  } catch (err: any) {
+    console.warn(`[PriceLookupWorker] Failed to load price_result template: ${err.message}`);
+  }
 
-  const suggestedReply = formatPriceSuggestion(
-    displayLabel,
-    salePrice,
-    priceResult.avgPrice,
-    priceResult.source,
-    snapshot.createdAt,
-    priceNote,
-    priceSettings.showMarketPrice ?? false,
-    isFallbackMode,
-    isModelOnlyMode
-  );
+  // Legacy fallback text
+  let text = `Цена по OEM ${oem ?? displayLabel}: ${minPrice.toLocaleString("ru-RU")} — ${maxPrice.toLocaleString("ru-RU")} ₽`;
+  if (salePrice !== minPrice) {
+    text += ` (средняя: ${salePrice.toLocaleString("ru-RU")} ₽)`;
+  }
+  if (originLabel) {
+    text += `\n🌍 Происхождение: ${originLabel}`;
+  }
+  if (mileageRange) {
+    text += `\n🛣️ Пробег: ${mileageRange}`;
+  }
+  if ((snapshot.listingsCount ?? 0) > 0) {
+    text += `\n📊 Найдено объявлений: ${snapshot.listingsCount}`;
+  }
+  text += `\nОбновлено: ${timeStr}. Источник: ${snapshot.source}.`;
+  return text;
+}
+
+// ─── Suggestion creator ───────────────────────────────────────────────────────
+
+async function createPriceSuggestion(
+  tenantId: string,
+  conversationId: string,
+  snapshot: PriceSnapshot,
+  displayLabel: string,
+  oem: string | null
+): Promise<void> {
+  const suggestedReply = await buildPriceReply({ tenantId, snapshot, displayLabel, oem });
 
   const suggestion = await storage.createAiSuggestion({
     conversationId,
     messageId: null,
     suggestedReply,
     intent: "price",
-    confidence: isModelOnlyMode ? 0.8 : isFallbackMode ? 0.6 : 0.8,
+    confidence: 0.8,
     needsApproval: true,
     needsHandoff: false,
     questionsToAsk: [],
@@ -312,33 +311,295 @@ async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
   });
 
   broadcastSuggestion(tenantId, conversationId, suggestion.id);
-  console.log(`[PriceLookupWorker] Created price suggestion ${suggestion.id} for conversation ${conversationId}`);
+  await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
+  console.log(`[PriceLookupWorker] Created price suggestion ${suggestion.id}`);
 }
 
-async function fetchOrMock(
-  searchQuery: string,
-  oem: string | null,
+// ─── OEM lookup flow (new global cache + AI search) ──────────────────────────
+
+async function lookupPricesByOem(
   tenantId: string,
-  gearboxType?: GearboxType
-): Promise<PriceResult> {
-  const externalResult = await fetchFromExternalSources(searchQuery, gearboxType);
-  if (externalResult) {
-    await autoSaveToInternal(tenantId, oem, externalResult);
-    return externalResult;
+  oem: string,
+  conversationId: string
+): Promise<void> {
+  // Load agent settings once — needed for mileage tier thresholds
+  const agentSettings = await storage.getTenantAgentSettings(tenantId);
+
+  // 1. Check global cache first (any tenant, respects expiresAt)
+  const cached = await storage.getGlobalPriceSnapshot(oem);
+  if (cached) {
+    console.log(
+      `[PriceLookupWorker] Using global cached snapshot ${cached.id} for OEM "${oem}" (source: ${cached.source})`
+    );
+    await createPriceSuggestions(tenantId, conversationId, cached, agentSettings);
+    return;
   }
-  console.log(`[PriceLookupWorker] All sources exhausted for query "${searchQuery}", using mock`);
-  return mockSource.fetchPrices(searchQuery, gearboxType);
+
+  // 2. Identify transmission model from OEM
+  console.log(`[PriceLookupWorker] Identifying transmission for OEM "${oem}"`);
+  const identification = await identifyTransmissionByOem(oem);
+  console.log(
+    `[PriceLookupWorker] Identification: model=${identification.modelName}, ` +
+      `mfr=${identification.manufacturer}, origin=${identification.origin}, ` +
+      `confidence=${identification.confidence}`
+  );
+
+  // 3. Search real prices via OpenAI Web Search
+  console.log(`[PriceLookupWorker] Searching prices for OEM "${oem}"`);
+  const priceData = await searchUsedTransmissionPrice(
+    oem,
+    identification.modelName,
+    identification.origin
+  );
+
+  // Do NOT save mock results — only save real search results (including not_found)
+  if (priceData.source === "openai_web_search" || priceData.source === "not_found") {
+    // For not_found, use 24h TTL so we don't re-search constantly
+    const isNotFound = priceData.source === "not_found";
+    const ttlMs = isNotFound ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+    const expiresAt = new Date(Date.now() + ttlMs);
+
+    // 4. Save to global cache (tenantId = null means global)
+    const snapshot = await storage.createPriceSnapshot({
+      tenantId: null,
+      oem,
+      source: priceData.source,
+      minPrice: priceData.minPrice,
+      maxPrice: priceData.maxPrice,
+      avgPrice: priceData.avgPrice,
+      currency: "RUB",
+      modelName: identification.modelName,
+      manufacturer: identification.manufacturer,
+      origin: identification.origin,
+      mileageMin: priceData.mileageMin,
+      mileageMax: priceData.mileageMax,
+      listingsCount: priceData.listingsCount,
+      searchQuery: priceData.searchQuery,
+      expiresAt,
+      raw: { ...priceData, identification } as any,
+      searchKey: oem,
+    });
+
+    console.log(
+      `[PriceLookupWorker] Saved global snapshot ${snapshot.id} ` +
+        `(source: ${priceData.source}, expires: ${expiresAt.toISOString()})`
+    );
+
+    // 5. Create suggestion for this tenant's conversation (two-step dialog)
+    await createPriceSuggestions(tenantId, conversationId, snapshot, agentSettings);
+  } else {
+    // Unexpected source — create a not_found suggestion
+    console.warn(`[PriceLookupWorker] Unexpected source: ${(priceData as any).source}`);
+    await createNotFoundSuggestion(tenantId, conversationId, oem);
+  }
 }
 
-function broadcastSuggestion(tenantId: string, conversationId: string, suggestionId: string) {
-  import("../services/websocket-server")
-    .then(({ realtimeService }) => {
-      realtimeService.broadcastNewSuggestion(tenantId, conversationId, suggestionId);
-    })
-    .catch(() => {
-      // Skip broadcast if import fails (worker runs separately)
+// ─── Not-found suggestion (when price search yields nothing) ─────────────────
+
+async function createNotFoundSuggestion(
+  tenantId: string,
+  conversationId: string,
+  label: string
+): Promise<void> {
+  try {
+    const tpl = await storage.getActiveMessageTemplateByType(tenantId, "not_found");
+    const suggestedReply =
+      tpl?.content ??
+      `Есть в наличии, уточним стоимость для вас по OEM ${label}. Оставьте контакт — свяжемся в течение часа.`;
+
+    const suggestion = await storage.createAiSuggestion({
+      conversationId,
+      messageId: null,
+      suggestedReply,
+      intent: "price",
+      confidence: 0.5,
+      needsApproval: true,
+      needsHandoff: false,
+      questionsToAsk: [],
+      usedSources: [],
+      status: "pending",
+      decision: "NEED_APPROVAL",
+      autosendEligible: false,
     });
+
+    broadcastSuggestion(tenantId, conversationId, suggestion.id);
+    console.log(`[PriceLookupWorker] Created not-found suggestion ${suggestion.id}`);
+  } catch (err: any) {
+    console.warn(`[PriceLookupWorker] Failed to create not-found suggestion: ${err.message}`);
+  }
 }
+
+// ─── Fallback flow (no OEM — use make/model/type) ────────────────────────────
+
+interface PriceSettings {
+  marginPct?: number;
+  roundTo?: number;
+  priceNote?: string;
+  showMarketPrice?: boolean;
+}
+
+function buildFallbackSearchQuery(fallback: SearchFallback): string {
+  const parts: string[] = [];
+  if (fallback.gearboxModel) parts.push(fallback.gearboxModel);
+  if (fallback.make) parts.push(fallback.make);
+  if (fallback.model) parts.push(fallback.model);
+  return parts.join(" ");
+}
+
+function buildFallbackSearchKey(fallback: SearchFallback, isModelOnly: boolean): string {
+  if (isModelOnly && fallback.gearboxModel) {
+    return `model:${fallback.gearboxModel}`;
+  }
+  const parts = [
+    fallback.gearboxModel ?? "",
+    fallback.make ?? "",
+    fallback.model ?? "",
+    fallback.gearboxType,
+  ].filter(Boolean);
+  return parts.join("_");
+}
+
+async function lookupPricesByFallback(
+  tenantId: string,
+  conversationId: string,
+  searchFallback: SearchFallback,
+  isModelOnly: boolean
+): Promise<void> {
+  const { AvitoSource } = await import("../services/price-sources/avito-source");
+  const { DromSource } = await import("../services/price-sources/drom-source");
+  const { MockSource } = await import("../services/price-sources/mock-source");
+
+  const searchQuery = buildFallbackSearchQuery(searchFallback);
+  const searchKey = buildFallbackSearchKey(searchFallback, isModelOnly);
+  const gearboxType: GearboxType | undefined = searchFallback.gearboxType;
+
+  const displayLabel = isModelOnly
+    ? `КПП ${searchFallback.gearboxModel} ${searchFallback.make ?? ""} ${searchFallback.model ?? ""}`.trim()
+    : `${(searchFallback.gearboxType ?? "").toUpperCase()} ${searchFallback.make ?? ""} ${searchFallback.model ?? ""}`.trim();
+
+  const tenant = await storage.getTenant(tenantId);
+  const templates = (tenant?.templates ?? {}) as Record<string, unknown>;
+  const priceSettings = (templates.priceSettings ?? {}) as PriceSettings;
+
+  // Check cached fallback snapshot (tenant-scoped, since there's no OEM)
+  const existingSnapshot = await storage.getPriceSnapshotsByOem(tenantId, searchKey, 1);
+  if (existingSnapshot.length > 0) {
+    const cached = existingSnapshot[0];
+    console.log(`[PriceLookupWorker] Using cached fallback snapshot ${cached.id}`);
+    await createPriceSuggestion(tenantId, conversationId, cached, displayLabel, null);
+    return;
+  }
+
+  // Try external sources cascade
+  const externalSources = [new AvitoSource(), new DromSource()];
+  let priceResult = null;
+
+  for (const src of externalSources) {
+    try {
+      priceResult = await src.fetchPrices(searchQuery, gearboxType);
+      if (priceResult) {
+        console.log(`[PriceLookupWorker] Fallback: ${src.name} returned ${priceResult.listings.length} listings`);
+        break;
+      }
+    } catch (err: any) {
+      console.warn(`[PriceLookupWorker] Fallback source ${src.name}: ${err.message}`);
+    }
+  }
+
+  // Use mock if all external sources failed (but do NOT save mock to DB)
+  if (!priceResult) {
+    console.log(`[PriceLookupWorker] Fallback: all sources exhausted, using mock (not saved)`);
+    const mockResult = await new MockSource().fetchPrices(searchQuery, gearboxType);
+    const marginPct = priceSettings.marginPct ?? -25;
+    const roundTo = priceSettings.roundTo ?? 100;
+    const salePrice = Math.max(
+      Math.round((mockResult.avgPrice * (1 + marginPct / 100)) / roundTo) * roundTo,
+      0
+    );
+
+    // Create suggestion from mock (not saved to DB)
+    const updatedAt = new Date();
+    const timeStr = updatedAt.toLocaleString("ru-RU", {
+      timeZone: "Europe/Moscow",
+      hour: "2-digit",
+      minute: "2-digit",
+      day: "2-digit",
+      month: "2-digit",
+    });
+    const suggestedReply =
+      `Найдены варианты ${displayLabel}: ${salePrice.toLocaleString("ru-RU")} ₽\n` +
+      (isModelOnly ? "" : `⚠️ Без точного OEM — цена приблизительная.\n`) +
+      `Обновлено: ${timeStr}.`;
+
+    const suggestion = await storage.createAiSuggestion({
+      conversationId,
+      messageId: null,
+      suggestedReply,
+      intent: "price",
+      confidence: isModelOnly ? 0.7 : 0.5,
+      needsApproval: true,
+      needsHandoff: false,
+      questionsToAsk: [],
+      usedSources: [],
+      status: "pending",
+      decision: "NEED_APPROVAL",
+      autosendEligible: false,
+    });
+
+    broadcastSuggestion(tenantId, conversationId, suggestion.id);
+    await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
+    return;
+  }
+
+  // Save real fallback result to tenant-scoped snapshot (not global — no OEM)
+  const marginPct = priceSettings.marginPct ?? -25;
+  const roundTo = priceSettings.roundTo ?? 100;
+  const salePrice = Math.max(
+    Math.round((priceResult.avgPrice * (1 + marginPct / 100)) / roundTo) * roundTo,
+    0
+  );
+
+  const snapshot = await storage.createPriceSnapshot({
+    tenantId,
+    oem: searchKey,
+    source: priceResult.source,
+    minPrice: salePrice,
+    maxPrice: salePrice,
+    avgPrice: salePrice,
+    marketMinPrice: priceResult.minPrice,
+    marketMaxPrice: priceResult.maxPrice,
+    marketAvgPrice: priceResult.avgPrice,
+    salePrice,
+    marginPct,
+    searchKey,
+    currency: "RUB",
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    raw: priceResult.listings as any,
+  });
+
+  await createPriceSuggestion(tenantId, conversationId, snapshot, displayLabel, null);
+}
+
+// ─── Main processor ───────────────────────────────────────────────────────────
+
+async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
+  const { tenantId, conversationId, oem, searchFallback, isModelOnly } = job.data;
+
+  if (oem) {
+    // New flow: global cache + AI identification + OpenAI web search
+    console.log(`[PriceLookupWorker] OEM mode for "${oem}", conversation ${conversationId}`);
+    await lookupPricesByOem(tenantId, oem, conversationId);
+  } else if (searchFallback) {
+    // Fallback flow: no OEM, use make/model/gearboxType
+    const mode = isModelOnly ? "MODEL_ONLY" : "FALLBACK";
+    console.log(`[PriceLookupWorker] ${mode} mode, conversation ${conversationId}`);
+    await lookupPricesByFallback(tenantId, conversationId, searchFallback, !!isModelOnly);
+  } else {
+    console.warn(`[PriceLookupWorker] Job ${job.id} has neither oem nor searchFallback — skipping`);
+  }
+}
+
+// ─── Worker factory ───────────────────────────────────────────────────────────
 
 export function createPriceLookupWorker(connectionConfig: {
   host: string;

@@ -8,6 +8,8 @@ import {
   vehicleLookupCache, vehicleLookupCases,
   priceSnapshots, internalPrices,
   telegramSessions,
+  messageTemplates, paymentMethods,
+  tenantAgentSettings,
 } from "@shared/schema";
 import {
   type Tenant, type InsertTenant,
@@ -48,6 +50,9 @@ import {
   type PriceSnapshot, type InsertPriceSnapshot,
   type InternalPrice, type InsertInternalPrice,
   type TelegramSession, type InsertTelegramSession,
+  type MessageTemplate, type InsertMessageTemplate,
+  type PaymentMethod, type InsertPaymentMethod,
+  type TenantAgentSettings, type InsertTenantAgentSettings,
 } from "@shared/schema";
 import type { IStorage } from "./storage";
 import { encryptSessionString, decryptSessionString } from "./services/telegram-session-crypto";
@@ -1388,17 +1393,28 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async getLatestPriceSnapshot(tenantId: string, searchKey: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined> {
-    const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+  async getGlobalPriceSnapshot(oem: string): Promise<PriceSnapshot | null> {
+    const row = await this.getLatestPriceSnapshot(oem, 7);
+    return row ?? null;
+  }
+
+  async getLatestPriceSnapshot(oem: string, maxAgeDays = 7): Promise<PriceSnapshot | undefined> {
+    const now = new Date();
+    // Prefer snapshots that have expiresAt set and not yet expired
+    // Fall back to createdAt-based cutoff for legacy rows
     const [row] = await db.select()
       .from(priceSnapshots)
       .where(and(
-        eq(priceSnapshots.tenantId, tenantId),
+        eq(priceSnapshots.oem, oem),
         or(
-          eq(priceSnapshots.searchKey, searchKey),
-          eq(priceSnapshots.oem, searchKey),
-        ),
-        gte(priceSnapshots.createdAt, cutoff)
+          // New-style: has expiresAt and it's in the future
+          sql`(${priceSnapshots.expiresAt} IS NOT NULL AND ${priceSnapshots.expiresAt} > ${now})`,
+          // Legacy-style: no expiresAt, use createdAt-based cutoff
+          and(
+            sql`${priceSnapshots.expiresAt} IS NULL`,
+            gte(priceSnapshots.createdAt, new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000))
+          )
+        )
       ))
       .orderBy(desc(priceSnapshots.createdAt))
       .limit(1);
@@ -1492,5 +1508,150 @@ export class DatabaseStorage implements IStorage {
   async deleteTelegramAccount(id: string): Promise<boolean> {
     const result = await db.delete(telegramSessions).where(eq(telegramSessions.id, id));
     return (result.rowCount ?? 0) > 0;
+  }
+
+  // ─── Message Templates ───────────────────────────────────────────────────
+
+  async getMessageTemplatesByTenant(tenantId: string): Promise<MessageTemplate[]> {
+    return db.select()
+      .from(messageTemplates)
+      .where(eq(messageTemplates.tenantId, tenantId))
+      .orderBy(messageTemplates.order, messageTemplates.createdAt);
+  }
+
+  async getActiveMessageTemplateByType(tenantId: string, type: string): Promise<MessageTemplate | undefined> {
+    const [row] = await db.select()
+      .from(messageTemplates)
+      .where(and(
+        eq(messageTemplates.tenantId, tenantId),
+        eq(messageTemplates.type, type),
+        eq(messageTemplates.isActive, true),
+      ))
+      .orderBy(messageTemplates.order)
+      .limit(1);
+    return row;
+  }
+
+  async getMessageTemplate(id: string): Promise<MessageTemplate | undefined> {
+    const [row] = await db.select().from(messageTemplates).where(eq(messageTemplates.id, id));
+    return row;
+  }
+
+  async createMessageTemplate(data: InsertMessageTemplate): Promise<MessageTemplate> {
+    const [row] = await db.insert(messageTemplates).values(data).returning();
+    return row;
+  }
+
+  async updateMessageTemplate(id: string, data: Partial<InsertMessageTemplate>): Promise<MessageTemplate | undefined> {
+    const [row] = await db.update(messageTemplates)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(messageTemplates.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteMessageTemplate(id: string): Promise<boolean> {
+    const result = await db.delete(messageTemplates).where(eq(messageTemplates.id, id));
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async seedDefaultTemplates(tenantId: string): Promise<void> {
+    const { DEFAULT_TEMPLATES } = await import("./services/template-renderer");
+    for (const tpl of DEFAULT_TEMPLATES) {
+      await db.insert(messageTemplates)
+        .values({ tenantId, ...tpl })
+        .onConflictDoNothing();
+    }
+  }
+
+  // ─── Payment Methods ─────────────────────────────────────────────────────
+
+  async getPaymentMethodsByTenant(tenantId: string): Promise<PaymentMethod[]> {
+    return db.select()
+      .from(paymentMethods)
+      .where(eq(paymentMethods.tenantId, tenantId))
+      .orderBy(paymentMethods.order, paymentMethods.createdAt);
+  }
+
+  async getActivePaymentMethods(tenantId: string): Promise<PaymentMethod[]> {
+    return db.select()
+      .from(paymentMethods)
+      .where(and(
+        eq(paymentMethods.tenantId, tenantId),
+        eq(paymentMethods.isActive, true),
+      ))
+      .orderBy(paymentMethods.order, paymentMethods.createdAt);
+  }
+
+  async getPaymentMethod(id: string): Promise<PaymentMethod | undefined> {
+    const [row] = await db.select().from(paymentMethods).where(eq(paymentMethods.id, id));
+    return row;
+  }
+
+  async createPaymentMethod(data: InsertPaymentMethod): Promise<PaymentMethod> {
+    const [row] = await db.insert(paymentMethods).values(data).returning();
+    return row;
+  }
+
+  async updatePaymentMethod(id: string, data: Partial<InsertPaymentMethod>): Promise<PaymentMethod | undefined> {
+    const [row] = await db.update(paymentMethods)
+      .set(data)
+      .where(eq(paymentMethods.id, id))
+      .returning();
+    return row;
+  }
+
+  async deletePaymentMethod(id: string): Promise<boolean> {
+    const result = await db.delete(paymentMethods).where(eq(paymentMethods.id, id));
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async reorderPaymentMethods(tenantId: string, updates: Array<{ id: string; order: number }>): Promise<void> {
+    for (const { id, order } of updates) {
+      await db.update(paymentMethods)
+        .set({ order })
+        .where(and(
+          eq(paymentMethods.id, id),
+          eq(paymentMethods.tenantId, tenantId),
+        ));
+    }
+  }
+
+  // ─── Tenant Agent Settings ────────────────────────────────────────────────
+
+  async getTenantAgentSettings(tenantId: string): Promise<TenantAgentSettings | null> {
+    const [row] = await db.select()
+      .from(tenantAgentSettings)
+      .where(eq(tenantAgentSettings.tenantId, tenantId));
+    return row ?? null;
+  }
+
+  async upsertTenantAgentSettings(tenantId: string, data: Partial<InsertTenantAgentSettings>): Promise<TenantAgentSettings> {
+    const [row] = await db.insert(tenantAgentSettings)
+      .values({
+        ...data,
+        tenantId,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: tenantAgentSettings.tenantId,
+        set: {
+          companyName: data.companyName,
+          specialization: data.specialization,
+          warehouseCity: data.warehouseCity,
+          warrantyMonths: data.warrantyMonths,
+          warrantyKm: data.warrantyKm,
+          installDays: data.installDays,
+          qrDiscountPercent: data.qrDiscountPercent,
+          systemPrompt: data.systemPrompt,
+          objectionPayment: data.objectionPayment,
+          objectionOnline: data.objectionOnline,
+          closingScript: data.closingScript,
+          customFacts: data.customFacts,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return row;
   }
 }

@@ -16,15 +16,68 @@ import {
   type KnowledgeDoc,
   type Tenant,
   type CustomerMemory,
+  type TenantAgentSettings,
   PENALTY_CODES,
   INTENT_TYPES,
   VEHICLE_LOOKUP_INTENTS,
 } from "@shared/schema";
 
-const openai = new OpenAI({
+export const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY || "sk-placeholder",
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || undefined,
 });
+
+// Generic fallback system prompt — used when the tenant has not configured
+// a custom system prompt in their agent settings.
+export const DEFAULT_SYSTEM_PROMPT = `Вы — профессиональный менеджер по продажам, помогающий клиентам с их запросами.
+
+ВАЖНЫЕ ПРАВИЛА:
+1. НИКОГДА не придумывайте цены, наличие или сроки доставки. Используйте только факты из предоставленного контекста.
+2. Если информации нет, задавайте уточняющие вопросы.
+3. Отвечайте кратко и по существу.
+4. При вопросах о скидках и жалобах — переключайте на оператора.`;
+
+// Builds the "identity + company facts + scripts" part of the system prompt.
+// CONTEXT, customer memory, few-shot examples, and JSON format instructions
+// are appended separately in generateWithDecisionEngine().
+function buildSystemPrompt(
+  tenant: Tenant,
+  agentSettings: TenantAgentSettings | null
+): string {
+  const base = agentSettings?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+
+  const facts: string[] = [];
+  const name = agentSettings?.companyName ?? tenant.name;
+  if (name) facts.push(`- Название: ${name}`);
+  if (agentSettings?.specialization)
+    facts.push(`- Специализация: ${agentSettings.specialization}`);
+  if (agentSettings?.warehouseCity)
+    facts.push(`- Город склада: ${agentSettings.warehouseCity}`);
+  if (agentSettings?.warrantyMonths && agentSettings?.warrantyKm)
+    facts.push(`- Гарантия: ${agentSettings.warrantyMonths} мес. / ${agentSettings.warrantyKm} км`);
+  if (agentSettings?.installDays)
+    facts.push(`- Срок на установку после получения: ${agentSettings.installDays} дней`);
+  if (agentSettings?.qrDiscountPercent)
+    facts.push(`- Скидка при оплате QR/СБП: ${agentSettings.qrDiscountPercent}%`);
+
+  const factsBlock = facts.length > 0
+    ? "ДАННЫЕ КОМПАНИИ:\n" + facts.join("\n")
+    : "";
+
+  const scripts: string[] = [];
+  if (agentSettings?.objectionPayment)
+    scripts.push(`Ответ на "оплата при получении":\n${agentSettings.objectionPayment}`);
+  if (agentSettings?.objectionOnline)
+    scripts.push(`Ответ на "онлайн платёж опасен":\n${agentSettings.objectionOnline}`);
+  if (agentSettings?.closingScript)
+    scripts.push(`Скрипт закрытия сделки:\n${agentSettings.closingScript}`);
+
+  const scriptsBlock = scripts.length > 0
+    ? "СКРИПТЫ ОТВЕТОВ:\n" + scripts.join("\n\n")
+    : "";
+
+  return [base, factsBlock, scriptsBlock].filter(Boolean).join("\n\n");
+}
 
 const CONFIDENCE_WEIGHTS = {
   similarity: 0.45,
@@ -38,7 +91,13 @@ const DEFAULT_SETTINGS: DecisionSettings = {
   tEscalate: 0.40,
   autosendAllowed: false,
   intentsAutosendAllowed: ["price", "availability", "shipping", "other"],
-  intentsForceHandoff: ["discount", "complaint"],
+  intentsForceHandoff: [
+    "discount",
+    "complaint",
+    "photo_request",     // always escalate — needs warehouse photo
+    "needs_manual_quote",// always escalate — no price found
+    "want_visit",        // always escalate — needs warehouse address
+  ],
   updatedAt: new Date(),
 };
 
@@ -61,7 +120,49 @@ const TOPIC_LABELS: Record<string, string> = {
   discount: "Скидки",
   complaint: "Жалобы",
   other: "Прочее",
+  photo_request: "Запрос фото",
+  price_objection: "Возражение по цене",
+  ready_to_buy: "Готов купить",
+  needs_manual_quote: "Ручной расчёт",
+  invalid_vin: "Неверный ВИН",
+  marking_provided: "Маркировка агрегата",
+  payment_blocked: "Блокировка платежа",
+  warranty_question: "Вопрос о гарантии",
+  want_visit: "Хочет приехать",
+  what_included: "Что в комплекте",
+  mileage_preference: "Выбор по пробегу/цене",
 };
+
+// Intent classification guide appended to every system prompt.
+// Surgical update: new intents added below existing ones — do not reorder existing entries.
+const INTENT_GUIDE = `КЛАССИФИКАЦИЯ ИНТЕНТОВ (выбирайте наиболее точный):
+
+Базовые интенты:
+- price            — клиент спрашивает цену товара
+- availability     — клиент спрашивает о наличии
+- shipping         — вопросы о доставке, сроках, транспортных компаниях
+- return           — вопросы о возврате товара
+- discount         — клиент просит скидку
+- complaint        — жалоба или претензия
+- other            — любые другие вопросы
+
+Интенты поиска транспортного средства:
+- vehicle_id_request    — запрос ВИН/РАМЫ у клиента
+- gearbox_tag_request   — запрос фото шильдика коробки
+- gearbox_tag_retry     — повторный запрос нечитаемого фото
+
+Новые интенты:
+- photo_request       — клиент просит фото или видео товара (ВСЕГДА ESCALATE)
+- price_objection     — "дорого", "видел дешевле", возражение по цене
+- ready_to_buy        — "оформляем", "беру", "как заказать", запрос реквизитов, готов к оплате
+- needs_manual_quote  — цена не найдена в системе, нужен ручной расчёт (ВСЕГДА ESCALATE)
+- invalid_vin         — предоставленный ВИН не соответствует формату (17 символов, нет И/О/Q)
+- marking_provided    — клиент даёт маркировку КПП/двигателя напрямую (напр. "A245E-02A", "K9K")
+- payment_blocked     — банк заблокировал платёж клиента
+- warranty_question   — вопрос об условиях гарантии
+- want_visit          — клиент хочет приехать на склад лично (ВСЕГДА ESCALATE)
+- what_included       — вопрос о комплектации ("ЭБУ", "навесное", "гидротрансформатор", "с косой")
+- mileage_preference  — клиент выбирает вариант по цене или пробегу. Триггеры: "дешевле", "поменьше пробег", "эконом", "оптимум", "лучший вариант", "бюджет", ответ на вопрос о выборе варианта. Действие: NEED_APPROVAL — агент предлагает конкретный вариант.`;
 
 export function buildCustomerContextBlock(memory: CustomerMemory | null | undefined): string | null {
   if (!memory) return null;
@@ -446,6 +547,7 @@ export async function generateWithDecisionEngine(
   context: GenerationContext
 ): Promise<DecisionResult> {
   const settings = await storage.getDecisionSettings(context.tenantId) || DEFAULT_SETTINGS;
+  const agentSettings = await storage.getTenantAgentSettings(context.tenantId);
   
   const decisionEngineEnabled = await featureFlagService.isEnabled("DECISION_ENGINE_ENABLED", context.tenantId);
   const autosendEnabled = await featureFlagService.isEnabled("AI_AUTOSEND_ENABLED", context.tenantId);
@@ -506,27 +608,24 @@ export async function generateWithDecisionEngine(
     }
   }
 
-  const systemPrompt = `You are a professional sales consultant for "${context.tenant.name}".
-Communication style: ${context.tenant.tone === "formal" ? "formal, polite" : "friendly, casual"}, address as "${context.tenant.addressStyle === "vy" ? "Vy (formal)" : "ty (informal)"}", language: ${context.tenant.language}.
+  const basePrompt = buildSystemPrompt(context.tenant, agentSettings);
 
-IMPORTANT RULES:
-1. NEVER make up prices, availability, or delivery times. Only use facts from the provided context.
-2. If information is not available, ask clarifying questions.
-3. Be concise and helpful.
-4. If the customer asks for a discount: ${context.tenant.allowDiscounts ? `You can offer up to ${context.tenant.maxDiscountPercent}% discount.` : "Politely explain that discounts are not available."}
-
-${contextParts.length > 0 ? "CONTEXT:\n" + contextParts.join("\n\n") : "No specific product/knowledge context available."}
-${customerContextBlock ? "\n" + customerContextBlock : ""}
-${fewShotBlock ? "\n" + fewShotBlock : ""}
-
-Respond ONLY with a JSON object in this exact format:
+  const systemPrompt = [
+    basePrompt,
+    `Стиль общения: ${context.tenant.tone === "formal" ? "формальный, вежливый" : "дружелюбный, неформальный"}, обращение: "${context.tenant.addressStyle === "vy" ? "Вы" : "ты"}", язык: ${context.tenant.language}.`,
+    `Скидки: ${context.tenant.allowDiscounts ? `Вы можете предложить скидку до ${context.tenant.maxDiscountPercent}%.` : "Вежливо объясните, что скидки не предусмотрены."}`,
+    contextParts.length > 0 ? "CONTEXT:\n" + contextParts.join("\n\n") : "No specific product/knowledge context available.",
+    customerContextBlock ?? "",
+    fewShotBlock ?? "",
+    INTENT_GUIDE,
+    `Respond ONLY with a JSON object in this exact format:
 {
   "reply_text": "Your response to the customer",
-  "intent": "price|availability|shipping|return|discount|complaint|other|vehicle_id_request|gearbox_tag_request|gearbox_tag_retry",
+  "intent": "price|availability|shipping|return|discount|complaint|other|vehicle_id_request|gearbox_tag_request|gearbox_tag_retry|photo_request|price_objection|ready_to_buy|needs_manual_quote|invalid_vin|marking_provided|payment_blocked|warranty_question|want_visit|what_included|mileage_preference",
   "intent_probability": 0.0-1.0,
   "questions_to_ask": ["optional questions if info is missing"]
-}
-Use vehicle_id_request when asking for VIN/FRAME; gearbox_tag_request when asking for gearbox nameplate photo; gearbox_tag_retry when asking to resend unreadable photo.`;
+}`,
+  ].filter(Boolean).join("\n\n");
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",

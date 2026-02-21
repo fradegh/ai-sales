@@ -29,6 +29,7 @@ import analyticsRouter from "./routes/analytics.routes";
 import onboardingRouter from "./routes/onboarding.routes";
 import billingRouter from "./routes/billing.routes";
 import vehicleLookupRouter from "./routes/vehicle-lookup.routes";
+import tenantConfigRouter from "./routes/tenant-config.routes";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -60,6 +61,7 @@ export async function registerRoutes(
   app.use(onboardingRouter);
   app.use(billingRouter);
   app.use(vehicleLookupRouter);
+  app.use(tenantConfigRouter);
 
   // ============ CHANNEL MANAGEMENT ROUTES ============
 

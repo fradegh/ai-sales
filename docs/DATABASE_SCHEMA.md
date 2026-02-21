@@ -50,6 +50,9 @@
   - [vehicle_lookup_cases](#vehicle_lookup_cases)
   - [price_snapshots](#price_snapshots)
   - [internal_prices](#internal_prices)
+  - [message_templates](#message_templates)
+  - [payment_methods](#payment_methods)
+  - [tenant_agent_settings](#tenant_agent_settings)
 - [Relationships](#relationships)
 - [Indexes](#indexes)
 - [Migrations History](#migrations-history)
@@ -980,32 +983,48 @@ Individual vehicle lookup requests tied to conversations.
 
 ### price_snapshots
 
-Price lookup results from various sources.
+Global price cache per OEM. Entries with `tenant_id = NULL` are shared across all tenants (7-day TTL via `expires_at`). Tenant-scoped entries (fallback/no-OEM mode) use `tenant_id` with 24h TTL.
+
+**Migration:** `0011_update_price_snapshots.sql` — made `tenant_id` nullable, added new columns.
 
 | Column | Type | Nullable | Default | Constraints | Description |
 |--------|------|----------|---------|-------------|-------------|
 | id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Snapshot UUID |
-| tenant_id | varchar | NO | — | FK → tenants.id | Owning tenant |
+| tenant_id | varchar | **YES** | — | FK → tenants.id | Owning tenant; `NULL` = global cache entry |
 | oem | text | NO | — | — | OEM part number |
-| source | text | NO | — | — | `internal`, `avito`, `drom`, `web`, `mock` |
+| source | text | NO | — | — | `internal`, `avito`, `drom`, `web`, `openai_web_search`, `not_found`, `mock` |
 | currency | text | NO | `'RUB'` | — | Currency |
 | min_price | integer | YES | — | — | Minimum found price |
 | max_price | integer | YES | — | — | Maximum found price |
 | avg_price | integer | YES | — | — | Average price |
-| market_min_price | integer | YES | — | — | Market minimum |
-| market_max_price | integer | YES | — | — | Market maximum |
-| market_avg_price | integer | YES | — | — | Market average |
-| sale_price | integer | YES | — | — | Calculated sale price |
+| market_min_price | integer | YES | — | — | Market minimum (fallback mode) |
+| market_max_price | integer | YES | — | — | Market maximum (fallback mode) |
+| market_avg_price | integer | YES | — | — | Market average (fallback mode) |
+| sale_price | integer | YES | — | — | Calculated sale price (fallback mode) |
 | margin_pct | integer | YES | `0` | — | Applied margin percentage |
 | price_note | text | YES | — | — | Price display note |
 | search_key | text | YES | — | — | Search key (normalized OEM) |
-| raw | jsonb | YES | `'{}'` | — | Raw response data |
+| model_name | text | YES | — | — | Transmission model name, e.g. "JATCO JF011E" |
+| manufacturer | text | YES | — | — | Manufacturer name, e.g. "JATCO", "Aisin", "ZF" |
+| origin | text | YES | — | — | Production origin: `japan`, `europe`, `korea`, `usa`, `unknown` |
+| mileage_min | integer | YES | — | — | Lowest mileage found across listings (km) |
+| mileage_max | integer | YES | — | — | Highest mileage found across listings (km) |
+| listings_count | integer | YES | `0` | — | Number of valid listings found |
+| search_query | text | YES | — | — | Query string used for OpenAI web search |
+| expires_at | timestamp | YES | — | — | Cache expiry: `created_at + 7 days` (or 24h for `not_found`) |
+| raw | jsonb | YES | `'{}'` | — | Raw response data + identification result |
 | created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Snapshot timestamp |
 
 **Indexes:**
 - `price_snapshots_tenant_oem_created_idx` on `(tenant_id, oem, created_at DESC)`
 - `price_snapshots_oem_created_idx` on `(oem, created_at DESC)`
 - `price_snapshots_search_key_idx` on `(tenant_id, search_key)`
+- `idx_price_snapshots_oem_expires` on `(oem, expires_at DESC)` — fast global cache lookup
+
+**Cache logic:**
+- OEM lookup → `getGlobalPriceSnapshot(oem)` checks `expires_at > now` globally (no tenant filter)
+- Fallback mode → `getPriceSnapshotsByOem(tenantId, searchKey)` (tenant-scoped, existing behavior)
+- Mock results are **never** saved to this table
 
 ---
 
@@ -1027,6 +1046,85 @@ Internal price catalog (tenant's own prices).
 **Indexes:**
 - `internal_prices_tenant_oem_condition_supplier_idx` — UNIQUE on `(tenant_id, oem, condition, supplier)`
 - `internal_prices_tenant_oem_idx` on `(tenant_id, oem)`
+
+---
+
+### message_templates
+
+Custom message templates with `{{variable}}` placeholders. Used by the price-lookup worker for formatted price replies and payment option suggestions.
+
+| Column | Type | Nullable | Default | Constraints | Description |
+|--------|------|----------|---------|-------------|-------------|
+| id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Template UUID |
+| tenant_id | varchar | NO | — | FK → tenants.id | Owning tenant |
+| type | text | NO | — | — | `price_result`, `payment_options`, `tag_request`, `not_found` |
+| name | text | NO | — | — | Display name |
+| content | text | NO | — | — | Template text with `{{variables}}` |
+| is_active | boolean | NO | `true` | — | Active flag |
+| order | integer | NO | `0` | — | Display order |
+| created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Creation timestamp |
+| updated_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Last update |
+
+**Indexes:**
+- `message_templates_tenant_type_idx` on `(tenant_id, type)`
+- `message_templates_tenant_active_idx` on `(tenant_id, is_active)`
+
+---
+
+### payment_methods
+
+Payment method list shown to customers after price suggestions.
+
+| Column | Type | Nullable | Default | Constraints | Description |
+|--------|------|----------|---------|-------------|-------------|
+| id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Payment method UUID |
+| tenant_id | varchar | NO | — | FK → tenants.id | Owning tenant |
+| title | text | NO | — | — | Method title (e.g. "Перевод по СБП") |
+| description | text | YES | — | — | Optional description |
+| is_active | boolean | NO | `true` | — | Active flag |
+| order | integer | NO | `0` | — | Display order |
+| created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Creation timestamp |
+
+**Indexes:**
+- `payment_methods_tenant_idx` on `tenant_id`
+- `payment_methods_tenant_active_idx` on `(tenant_id, is_active)`
+
+---
+
+### tenant_agent_settings
+
+Per-tenant AI agent configuration. One row per tenant. Allows operators to customise agent identity, response scripts, and the system prompt without changing code.
+
+Added in migration `0010_add_tenant_agent_settings.sql`. Mileage tier columns added in `0012_add_mileage_tiers.sql`.
+
+| Column | Type | Nullable | Default | Constraints | Description |
+|--------|------|----------|---------|-------------|-------------|
+| id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Settings UUID |
+| tenant_id | varchar | NO | — | FK → tenants.id, UNIQUE | One row per tenant |
+| company_name | text | YES | — | — | Company display name used in AI facts block |
+| specialization | text | YES | — | — | What the company does |
+| warehouse_city | text | YES | — | — | City where the warehouse is located |
+| warranty_months | integer | YES | — | — | Warranty period in months |
+| warranty_km | integer | YES | — | — | Warranty period in kilometers |
+| install_days | integer | YES | — | — | Days allowed for installation after delivery |
+| qr_discount_percent | integer | YES | — | — | Discount percentage for QR/SBP payments |
+| system_prompt | text | YES | — | — | Custom system prompt; if set, replaces `DEFAULT_SYSTEM_PROMPT` |
+| objection_payment | text | YES | — | — | Script for "can I pay on delivery?" objection |
+| objection_online | text | YES | — | — | Script for "online payment is risky" objection |
+| closing_script | text | YES | — | — | Script sent when client is ready to buy |
+| custom_facts | jsonb | YES | `'{}'` | — | Extra company facts (arbitrary key-value) |
+| mileage_low | integer | YES | — | — | Mileage threshold for quality tier (≤ this = low mileage / expensive). Default 60 000 km |
+| mileage_mid | integer | YES | — | — | Mileage threshold for mid tier (≤ this = mid, > this = budget). Default 90 000 km |
+| mileage_high | integer | YES | — | — | Informational upper bound for budget tier display. Default 90 000 km |
+| updated_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Last update timestamp |
+
+**Indexes:**
+- `tenant_agent_settings_tenant_idx` on `tenant_id`
+
+**Mileage tier logic (used in price-lookup.worker.ts):**
+- `quality tier`: `mileage ≤ mileage_low` — expensive, low mileage listings
+- `mid tier`: `mileage_low < mileage ≤ mileage_mid` — average listings
+- `budget tier`: `mileage > mileage_mid` — cheap, high mileage listings
 
 ---
 
@@ -1073,6 +1171,9 @@ tenants
  ├── telegram_sessions     (tenant_id → tenants.id)
  ├── price_snapshots       (tenant_id → tenants.id)
  ├── internal_prices       (tenant_id → tenants.id)
+ ├── message_templates     (tenant_id → tenants.id)
+ ├── payment_methods       (tenant_id → tenants.id)
+ ├── tenant_agent_settings (tenant_id → tenants.id)  [1:1]
  └── proxies               (assigned_tenant_id → tenants.id)
 
 users
@@ -1152,6 +1253,10 @@ vehicle_lookup_cache
 | 6b | `0006_telegram_multiaccount.sql` | Makes `phone_number` nullable in `telegram_sessions`; adds `auth_method`, `is_enabled`, and tenant index. |
 | 7 | `0007_price_commercial.sql` | Adds market price columns (`market_min_price`, `market_max_price`, `market_avg_price`, `sale_price`, `margin_pct`, `price_note`) to `price_snapshots`. |
 | 8 | `0008_price_snapshot_search_key.sql` | Adds `search_key` column to `price_snapshots` with index and backfill (`search_key = oem`). |
+| 9 | `0009_add_templates_and_payment_methods.sql` | Creates `message_templates` and `payment_methods` tables with indexes. |
+| 10 | `0010_add_tenant_agent_settings.sql` | Creates `tenant_agent_settings` table with UNIQUE constraint on `tenant_id` and index. |
+| 11 | `0011_update_price_snapshots.sql` | Makes `tenant_id` nullable (global cache), adds `model_name`, `manufacturer`, `origin`, `mileage_min`, `mileage_max`, `listings_count`, `search_query`, `expires_at`. Adds `idx_price_snapshots_oem_expires` index. |
+| 12 | `0012_add_mileage_tiers.sql` | Adds `mileage_low`, `mileage_mid`, `mileage_high` integer columns to `tenant_agent_settings` for two-step price dialog tier splitting. |
 
 ---
 

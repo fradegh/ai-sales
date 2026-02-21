@@ -37,6 +37,9 @@ import {
   type PriceSnapshot, type InsertPriceSnapshot,
   type InternalPrice, type InsertInternalPrice,
   type TelegramSession, type InsertTelegramSession,
+  type MessageTemplate, type InsertMessageTemplate,
+  type PaymentMethod, type InsertPaymentMethod,
+  type TenantAgentSettings, type InsertTenantAgentSettings,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -250,7 +253,11 @@ export interface IStorage {
 
   // Price Snapshots
   createPriceSnapshot(data: InsertPriceSnapshot): Promise<PriceSnapshot>;
-  getLatestPriceSnapshot(tenantId: string, searchKey: string, maxAgeMinutes: number): Promise<PriceSnapshot | undefined>;
+  // Global cache lookup — searches by OEM only, regardless of tenant.
+  // Returns the most recent non-expired snapshot (expiresAt > now) for this OEM.
+  getGlobalPriceSnapshot(oem: string): Promise<PriceSnapshot | null>;
+  // Configurable-age global lookup used internally by getGlobalPriceSnapshot.
+  getLatestPriceSnapshot(oem: string, maxAgeDays?: number): Promise<PriceSnapshot | undefined>;
   getPriceSnapshotsByOem(tenantId: string, oem: string, limit?: number): Promise<PriceSnapshot[]>;
 
   // Internal Prices
@@ -264,6 +271,28 @@ export interface IStorage {
   createTelegramAccount(data: InsertTelegramSession): Promise<TelegramSession>;
   updateTelegramAccount(id: string, data: Partial<InsertTelegramSession>): Promise<TelegramSession | undefined>;
   deleteTelegramAccount(id: string): Promise<boolean>;
+
+  // Message Templates
+  getMessageTemplatesByTenant(tenantId: string): Promise<MessageTemplate[]>;
+  getActiveMessageTemplateByType(tenantId: string, type: string): Promise<MessageTemplate | undefined>;
+  getMessageTemplate(id: string): Promise<MessageTemplate | undefined>;
+  createMessageTemplate(data: InsertMessageTemplate): Promise<MessageTemplate>;
+  updateMessageTemplate(id: string, data: Partial<InsertMessageTemplate>): Promise<MessageTemplate | undefined>;
+  deleteMessageTemplate(id: string): Promise<boolean>;
+  seedDefaultTemplates(tenantId: string): Promise<void>;
+
+  // Payment Methods
+  getPaymentMethodsByTenant(tenantId: string): Promise<PaymentMethod[]>;
+  getActivePaymentMethods(tenantId: string): Promise<PaymentMethod[]>;
+  getPaymentMethod(id: string): Promise<PaymentMethod | undefined>;
+  createPaymentMethod(data: InsertPaymentMethod): Promise<PaymentMethod>;
+  updatePaymentMethod(id: string, data: Partial<InsertPaymentMethod>): Promise<PaymentMethod | undefined>;
+  deletePaymentMethod(id: string): Promise<boolean>;
+  reorderPaymentMethods(tenantId: string, updates: Array<{ id: string; order: number }>): Promise<void>;
+
+  // Tenant Agent Settings
+  getTenantAgentSettings(tenantId: string): Promise<TenantAgentSettings | null>;
+  upsertTenantAgentSettings(tenantId: string, data: Partial<InsertTenantAgentSettings>): Promise<TenantAgentSettings>;
 }
 
 import { DatabaseStorage } from "./database-storage";

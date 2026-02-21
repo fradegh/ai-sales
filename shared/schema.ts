@@ -6,12 +6,23 @@ import { z } from "zod";
 // Valid intents for AI classification
 export const VALID_INTENTS = [
   "price",
-  "availability", 
+  "availability",
   "shipping",
   "return",
   "discount",
   "complaint",
   "other",
+  "photo_request",
+  "price_objection",
+  "ready_to_buy",
+  "needs_manual_quote",
+  "invalid_vin",
+  "marking_provided",
+  "payment_blocked",
+  "warranty_question",
+  "want_visit",
+  "what_included",
+  "mileage_preference",
 ] as const;
 
 export type ValidIntent = typeof VALID_INTENTS[number];
@@ -802,7 +813,26 @@ export type FeatureFlagName = typeof FEATURE_FLAG_NAMES[number];
 export const DECISION_TYPES = ["AUTO_SEND", "NEED_APPROVAL", "ESCALATE"] as const;
 export type DecisionType = typeof DECISION_TYPES[number];
 
-export const INTENT_TYPES = ["price", "availability", "shipping", "return", "discount", "complaint", "other"] as const;
+export const INTENT_TYPES = [
+  "price",
+  "availability",
+  "shipping",
+  "return",
+  "discount",
+  "complaint",
+  "other",
+  "photo_request",
+  "price_objection",
+  "ready_to_buy",
+  "needs_manual_quote",
+  "invalid_vin",
+  "marking_provided",
+  "payment_blocked",
+  "warranty_question",
+  "want_visit",
+  "what_included",
+  "mileage_preference",
+] as const;
 export type IntentType = typeof INTENT_TYPES[number];
 
 // Vehicle lookup flow intents (request-data steps only; final answers stay need-approval)
@@ -1318,13 +1348,15 @@ export const insertVehicleLookupCaseSchema = createInsertSchema(vehicleLookupCas
 });
 
 // Price Snapshots (cached price lookup results per OEM)
+// tenantId is NULLABLE — null means this is a global cache entry shared across all tenants.
+// A row with tenantId = null is a global result from OpenAI Web Search, valid for 7 days.
 export const priceSnapshots = pgTable(
   "price_snapshots",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+    tenantId: varchar("tenant_id").references(() => tenants.id), // null = global cache
     oem: text("oem").notNull(),
-    source: text("source").notNull(), // "internal", "avito", "drom", "web", "mock"
+    source: text("source").notNull(), // "internal", "avito", "drom", "web", "openai_web_search", "not_found", "mock"
     currency: text("currency").notNull().default("RUB"),
     minPrice: integer("min_price"),
     maxPrice: integer("max_price"),
@@ -1336,6 +1368,15 @@ export const priceSnapshots = pgTable(
     marginPct: integer("margin_pct").default(0),
     priceNote: text("price_note"),
     searchKey: text("search_key"),
+    // New fields for global OpenAI-based price search
+    modelName: text("model_name"),           // e.g. "JATCO JF011E"
+    manufacturer: text("manufacturer"),      // e.g. "JATCO", "Aisin", "ZF"
+    origin: text("origin"),                  // "japan" | "europe" | "korea" | "unknown"
+    mileageMin: integer("mileage_min"),      // lowest mileage found in listings (km)
+    mileageMax: integer("mileage_max"),      // highest mileage found in listings (km)
+    listingsCount: integer("listings_count").default(0), // number of valid listings found
+    searchQuery: text("search_query"),       // query used for web search
+    expiresAt: timestamp("expires_at"),      // createdAt + 7 days (or 24h for not_found)
     raw: jsonb("raw").default({}),
     createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   },
@@ -1343,6 +1384,7 @@ export const priceSnapshots = pgTable(
     index("price_snapshots_tenant_oem_created_idx").on(table.tenantId, table.oem, table.createdAt),
     index("price_snapshots_oem_created_idx").on(table.oem, table.createdAt),
     index("price_snapshots_search_key_idx").on(table.tenantId, table.searchKey),
+    index("idx_price_snapshots_oem_expires").on(table.oem, table.expiresAt),
   ]
 );
 
@@ -1378,6 +1420,107 @@ export type InternalPrice = typeof internalPrices.$inferSelect;
 export type InsertInternalPrice = typeof internalPrices.$inferInsert;
 
 export const insertInternalPriceSchema = createInsertSchema(internalPrices).omit({
+  id: true,
+  updatedAt: true,
+});
+
+// ============================================
+// MESSAGE TEMPLATES
+// ============================================
+//
+// Template variable reference (static config — not stored in DB):
+//   price_result: {{transmission_model}}, {{oem}}, {{min_price}},
+//                 {{max_price}}, {{avg_price}}, {{origin}},
+//                 {{car_brand}}, {{date}}
+//   payment_options: none (free-form content)
+//   not_found: none (free-form content)
+//   tag_request: none (free-form content)
+
+export const messageTemplates = pgTable("message_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  type: text("type").notNull(), // 'price_result' | 'payment_options' | 'tag_request' | 'not_found'
+  name: text("name").notNull(),
+  content: text("content").notNull(), // template with {{variables}}
+  isActive: boolean("is_active").notNull().default(true),
+  order: integer("order").notNull().default(0),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("message_templates_tenant_type_idx").on(table.tenantId, table.type),
+  index("message_templates_tenant_active_idx").on(table.tenantId, table.isActive),
+]);
+
+export type MessageTemplate = typeof messageTemplates.$inferSelect;
+export type InsertMessageTemplate = typeof messageTemplates.$inferInsert;
+
+export const insertMessageTemplateSchema = createInsertSchema(messageTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// ============================================
+// PAYMENT METHODS
+// ============================================
+
+export const paymentMethods = pgTable("payment_methods", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id),
+  title: text("title").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  order: integer("order").notNull().default(0),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  index("payment_methods_tenant_idx").on(table.tenantId),
+  index("payment_methods_tenant_active_idx").on(table.tenantId, table.isActive),
+]);
+
+export type PaymentMethod = typeof paymentMethods.$inferSelect;
+export type InsertPaymentMethod = typeof paymentMethods.$inferInsert;
+
+export const insertPaymentMethodSchema = createInsertSchema(paymentMethods).omit({
+  id: true,
+  createdAt: true,
+});
+
+// ============================================
+// TENANT AGENT SETTINGS
+// ============================================
+// Per-tenant AI agent configuration — one row per tenant.
+// Allows operators to customise agent identity, company facts,
+// objection-handling scripts, and the system prompt without
+// touching the codebase.
+
+export const tenantAgentSettings = pgTable("tenant_agent_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id).unique(),
+  companyName: text("company_name"),
+  specialization: text("specialization"),
+  warehouseCity: text("warehouse_city"),
+  warrantyMonths: integer("warranty_months"),
+  warrantyKm: integer("warranty_km"),
+  installDays: integer("install_days"),
+  qrDiscountPercent: integer("qr_discount_percent"),
+  systemPrompt: text("system_prompt"),
+  objectionPayment: text("objection_payment"),
+  objectionOnline: text("objection_online"),
+  closingScript: text("closing_script"),
+  customFacts: jsonb("custom_facts").default({}),
+  // Mileage tier thresholds for two-step price dialog
+  mileageLow: integer("mileage_low"),   // quality tier: mileage ≤ mileageLow (expensive, low mileage)
+  mileageMid: integer("mileage_mid"),   // mid tier: mileage ≤ mileageMid; budget tier: mileage > mileageMid
+  mileageHigh: integer("mileage_high"), // informational upper bound for budget tier display
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("tenant_agent_settings_tenant_idx").on(table.tenantId),
+]);
+
+export type TenantAgentSettings = typeof tenantAgentSettings.$inferSelect;
+export type InsertTenantAgentSettings = typeof tenantAgentSettings.$inferInsert;
+
+export const insertTenantAgentSettingsSchema = createInsertSchema(tenantAgentSettings).omit({
   id: true,
   updatedAt: true,
 });

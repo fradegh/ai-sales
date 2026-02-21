@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
@@ -15,6 +16,35 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetFooter,
+} from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Building2,
   MessageSquare,
@@ -37,6 +67,12 @@ import {
   QrCode,
   Phone,
   User,
+  FileText,
+  CreditCard,
+  Pencil,
+  GripVertical,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { useBillingStatus, isSubscriptionRequired } from "@/hooks/use-billing";
 import { SubscriptionPaywall, ChannelPaywallOverlay, SubscriptionBadge } from "@/components/subscription-paywall";
@@ -54,12 +90,13 @@ import {
   FormMessage,
   FormDescription,
 } from "@/components/ui/form";
-import type { Tenant, DecisionSettings } from "@shared/schema";
+import type { Tenant, DecisionSettings, MessageTemplate, PaymentMethod, TenantAgentSettings } from "@shared/schema";
 import { VALID_INTENTS } from "@shared/schema";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const INTENT_LABELS: Record<string, string> = {
   price: "Цена",
@@ -69,6 +106,16 @@ const INTENT_LABELS: Record<string, string> = {
   discount: "Скидка",
   complaint: "Жалоба",
   other: "Другое",
+  photo_request: "Запрос фото",
+  price_objection: "Возражение по цене",
+  ready_to_buy: "Готов купить",
+  needs_manual_quote: "Ручной расчёт",
+  invalid_vin: "Неверный ВИН",
+  marking_provided: "Маркировка агрегата",
+  payment_blocked: "Блокировка платежа",
+  warranty_question: "Вопрос о гарантии",
+  want_visit: "Хочет приехать",
+  what_included: "Что в комплекте",
 };
 
 const INTENT_OPTIONS = VALID_INTENTS.map(value => ({
@@ -2673,6 +2720,1133 @@ const settingsFormSchema = z.object({
 
 type SettingsFormValues = z.infer<typeof settingsFormSchema>;
 
+// ============================================================
+// TEMPLATES TAB
+// ============================================================
+
+const TEMPLATE_TYPE_LABELS: Record<string, string> = {
+  price_result: "Результат поиска",
+  price_options: "Варианты (выбор)",
+  payment_options: "Варианты оплаты",
+  not_found: "Не найдено",
+};
+
+const PRICE_RESULT_VARIABLES = [
+  "transmission_model",
+  "oem",
+  "min_price",
+  "max_price",
+  "avg_price",
+  "origin",
+  "car_brand",
+  "date",
+];
+
+const PRICE_OPTIONS_VARIABLES = [
+  "budget_price",
+  "budget_mileage",
+  "mid_price",
+  "mid_mileage",
+  "quality_price",
+  "quality_mileage",
+  "transmission_model",
+  "oem",
+  "date",
+];
+
+const TEMPLATE_SAMPLE_VALUES: Record<string, string> = {
+  transmission_model: "JATCO JF011E",
+  oem: "31020-1XJ1B",
+  min_price: "45 000",
+  max_price: "65 000",
+  avg_price: "52 000",
+  origin: "Япония",
+  car_brand: "Nissan",
+  date: (() => {
+    const d = new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    return `${dd}.${mm}.${d.getFullYear()}`;
+  })(),
+  // price_options tier variables
+  budget_price: "44 000",
+  budget_mileage: "98 000",
+  mid_price: "57 000",
+  mid_mileage: "74 000",
+  quality_price: "71 000",
+  quality_mileage: "52 000",
+};
+
+function renderTemplatePreview(content: string): string {
+  return content.replace(/\{\{(\w+)\}\}/g, (_, key: string) =>
+    TEMPLATE_SAMPLE_VALUES[key] ?? `{{${key}}}`,
+  );
+}
+
+function TemplatesTab() {
+  const { toast } = useToast();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<MessageTemplate | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MessageTemplate | null>(null);
+  const [variablesOpen, setVariablesOpen] = useState(false);
+
+  const [formName, setFormName] = useState("");
+  const [formType, setFormType] = useState("");
+  const [formContent, setFormContent] = useState("");
+
+  const { data: templates, isLoading } = useQuery<MessageTemplate[]>({
+    queryKey: ["/api/templates"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { name: string; type: string; content: string }) => {
+      const res = await apiRequest("POST", "/api/templates", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      toast({ title: "Шаблон создан" });
+      setSheetOpen(false);
+    },
+    onError: () => {
+      toast({ title: "Не удалось создать шаблон", variant: "destructive" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: Partial<Pick<MessageTemplate, "name" | "content" | "isActive">> }) => {
+      const res = await apiRequest("PATCH", `/api/templates/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      toast({ title: "Шаблон обновлён" });
+      setSheetOpen(false);
+    },
+    onError: () => {
+      toast({ title: "Не удалось обновить шаблон", variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/templates/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
+      toast({ title: "Шаблон удалён" });
+      setDeleteTarget(null);
+    },
+    onError: () => {
+      toast({ title: "Не удалось удалить шаблон", variant: "destructive" });
+    },
+  });
+
+  function openCreate() {
+    setEditingTemplate(null);
+    setFormName("");
+    setFormType("");
+    setFormContent("");
+    setVariablesOpen(false);
+    setSheetOpen(true);
+  }
+
+  function openEdit(t: MessageTemplate) {
+    setEditingTemplate(t);
+    setFormName(t.name);
+    setFormType(t.type);
+    setFormContent(t.content);
+    setVariablesOpen(false);
+    setSheetOpen(true);
+  }
+
+  function insertVariable(variable: string) {
+    const ta = textareaRef.current;
+    const text = `{{${variable}}}`;
+    if (!ta) {
+      setFormContent((prev) => prev + text);
+      return;
+    }
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    setFormContent((prev) => prev.slice(0, start) + text + prev.slice(end));
+    setTimeout(() => {
+      ta.focus();
+      ta.setSelectionRange(start + text.length, start + text.length);
+    }, 0);
+  }
+
+  function handleSave() {
+    if (!formName.trim() || !formContent.trim()) return;
+    if (!editingTemplate && !formType) return;
+    if (editingTemplate) {
+      updateMutation.mutate({
+        id: editingTemplate.id,
+        data: { name: formName, content: formContent },
+      });
+    } else {
+      createMutation.mutate({ name: formName, type: formType, content: formContent });
+    }
+  }
+
+  const grouped = (templates ?? []).reduce<Record<string, MessageTemplate[]>>((acc, t) => {
+    if (!acc[t.type]) acc[t.type] = [];
+    acc[t.type].push(t);
+    return acc;
+  }, {});
+
+  const isEditing = editingTemplate !== null;
+  const activeType = isEditing ? editingTemplate?.type : formType;
+  const isPriceResult = activeType === "price_result";
+  const isPriceOptions = activeType === "price_options";
+  const hasVariables = isPriceResult || isPriceOptions;
+  const isSaving = createMutation.isPending || updateMutation.isPending;
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        {[1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-24 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-semibold">Шаблоны сообщений</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Настройка шаблонов для автоматических ответов
+          </p>
+        </div>
+        <Button onClick={openCreate} data-testid="button-add-template">
+          <Plus className="mr-2 h-4 w-4" />
+          Добавить шаблон
+        </Button>
+      </div>
+
+      {(templates?.length ?? 0) === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <FileText className="h-12 w-12 text-muted-foreground mb-4" />
+            <p className="text-muted-foreground">
+              Шаблоны не добавлены. Создайте первый шаблон.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-6">
+          {Object.entries(grouped).map(([type, items]) => (
+            <div key={type}>
+              <h3 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wide">
+                {TEMPLATE_TYPE_LABELS[type] ?? type}
+              </h3>
+              <div className="space-y-3">
+                {items.map((t) => (
+                  <Card key={t.id}>
+                    <CardContent className="flex items-center justify-between py-4 px-5 gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{t.name}</p>
+                        <Badge variant="secondary" className="mt-1 text-xs">
+                          {TEMPLATE_TYPE_LABELS[t.type] ?? t.type}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <Switch
+                          checked={t.isActive}
+                          onCheckedChange={(checked) =>
+                            updateMutation.mutate({ id: t.id, data: { isActive: checked } })
+                          }
+                          data-testid={`switch-template-${t.id}`}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openEdit(t)}
+                          data-testid={`button-edit-template-${t.id}`}
+                        >
+                          <Pencil className="mr-2 h-3.5 w-3.5" />
+                          Редактировать
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setDeleteTarget(t)}
+                          data-testid={`button-delete-template-${t.id}`}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Edit / Create Sheet */}
+      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>
+              {isEditing ? "Редактировать шаблон" : "Новый шаблон"}
+            </SheetTitle>
+          </SheetHeader>
+
+          <div className="space-y-5 py-6">
+            {!isEditing && (
+              <div className="space-y-2">
+                <Label htmlFor="template-type">Тип шаблона</Label>
+                <Select value={formType} onValueChange={setFormType}>
+                  <SelectTrigger id="template-type" data-testid="select-template-type">
+                    <SelectValue placeholder="Выберите тип" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(TEMPLATE_TYPE_LABELS).map(([val, label]) => (
+                      <SelectItem key={val} value={val}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="template-name">Название шаблона</Label>
+              <Input
+                id="template-name"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="Введите название"
+                data-testid="input-template-name"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="template-content">Текст шаблона</Label>
+              <Textarea
+                id="template-content"
+                ref={textareaRef}
+                value={formContent}
+                onChange={(e) => setFormContent(e.target.value)}
+                placeholder="Текст шаблона с {{переменными}}"
+                className="font-mono min-h-[200px] resize-y"
+                data-testid="textarea-template-content"
+              />
+            </div>
+
+            {hasVariables && (
+              <Collapsible open={variablesOpen} onOpenChange={setVariablesOpen}>
+                <CollapsibleTrigger asChild>
+                  <Button variant="outline" size="sm" className="w-full justify-between">
+                    Доступные переменные
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 transition-transform",
+                        variablesOpen && "rotate-180",
+                      )}
+                    />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-3">
+                  <div className="flex flex-wrap gap-2">
+                    {(isPriceOptions ? PRICE_OPTIONS_VARIABLES : PRICE_RESULT_VARIABLES).map((v) => (
+                      <Badge
+                        key={v}
+                        variant="outline"
+                        className="cursor-pointer font-mono text-xs hover:bg-accent"
+                        onClick={() => insertVariable(v)}
+                      >
+                        {`{{${v}}}`}
+                      </Badge>
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+
+            {formContent && (
+              <div className="space-y-2">
+                <Label>Предпросмотр</Label>
+                <div className="rounded-md border bg-muted/40 p-4 text-sm whitespace-pre-wrap">
+                  {renderTemplatePreview(formContent)}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <SheetFooter className="flex gap-2">
+            <Button variant="outline" onClick={() => setSheetOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={isSaving}
+              data-testid="button-save-template"
+            >
+              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Сохранить
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+
+      {/* Delete confirm */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить шаблон?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Шаблон «{deleteTarget?.name}» будет удалён без возможности восстановления.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+            >
+              Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+// ============================================================
+// PAYMENT METHODS TAB
+// ============================================================
+
+function PaymentMethodsTab() {
+  const { toast } = useToast();
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingMethod, setEditingMethod] = useState<PaymentMethod | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<PaymentMethod | null>(null);
+
+  const [formTitle, setFormTitle] = useState("");
+  const [formDescription, setFormDescription] = useState("");
+
+  const { data: methods, isLoading } = useQuery<PaymentMethod[]>({
+    queryKey: ["/api/payment-methods"],
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (data: { title: string; description?: string }) => {
+      const res = await apiRequest("POST", "/api/payment-methods", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payment-methods"] });
+      toast({ title: "Способ оплаты добавлен" });
+      setDialogOpen(false);
+    },
+    onError: () => {
+      toast({ title: "Не удалось добавить способ оплаты", variant: "destructive" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Partial<Pick<PaymentMethod, "title" | "description" | "isActive">>;
+    }) => {
+      const res = await apiRequest("PATCH", `/api/payment-methods/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payment-methods"] });
+      toast({ title: "Способ оплаты обновлён" });
+      setDialogOpen(false);
+    },
+    onError: () => {
+      toast({ title: "Не удалось обновить", variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/payment-methods/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payment-methods"] });
+      toast({ title: "Способ оплаты удалён" });
+      setDeleteTarget(null);
+    },
+    onError: () => {
+      toast({ title: "Не удалось удалить", variant: "destructive" });
+    },
+  });
+
+  const reorderMutation = useMutation({
+    mutationFn: async (items: Array<{ id: string; order: number }>) => {
+      await apiRequest("PATCH", "/api/payment-methods/reorder", { items });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payment-methods"] });
+    },
+    onError: () => {
+      toast({ title: "Не удалось изменить порядок", variant: "destructive" });
+    },
+  });
+
+  function openCreate() {
+    setEditingMethod(null);
+    setFormTitle("");
+    setFormDescription("");
+    setDialogOpen(true);
+  }
+
+  function openEdit(m: PaymentMethod) {
+    setEditingMethod(m);
+    setFormTitle(m.title);
+    setFormDescription(m.description ?? "");
+    setDialogOpen(true);
+  }
+
+  function handleSave() {
+    if (!formTitle.trim()) return;
+    const payload = {
+      title: formTitle,
+      description: formDescription.trim() || undefined,
+    };
+    if (editingMethod) {
+      updateMutation.mutate({ id: editingMethod.id, data: payload });
+    } else {
+      createMutation.mutate(payload);
+    }
+  }
+
+  const sortedMethods = [...(methods ?? [])].sort((a, b) => a.order - b.order);
+
+  function moveUp(index: number) {
+    if (index === 0) return;
+    const newOrder = sortedMethods.map((m, i) => ({ id: m.id, order: i }));
+    const tmp = newOrder[index].order;
+    newOrder[index].order = newOrder[index - 1].order;
+    newOrder[index - 1].order = tmp;
+    reorderMutation.mutate(newOrder);
+  }
+
+  function moveDown(index: number) {
+    if (index === sortedMethods.length - 1) return;
+    const newOrder = sortedMethods.map((m, i) => ({ id: m.id, order: i }));
+    const tmp = newOrder[index].order;
+    newOrder[index].order = newOrder[index + 1].order;
+    newOrder[index + 1].order = tmp;
+    reorderMutation.mutate(newOrder);
+  }
+
+  const isSaving = createMutation.isPending || updateMutation.isPending;
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        {[1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-16 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-xl font-semibold">Способы оплаты</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Список способов оплаты, предлагаемых клиентам
+          </p>
+        </div>
+        <Button onClick={openCreate} data-testid="button-add-payment-method">
+          <Plus className="mr-2 h-4 w-4" />
+          Добавить
+        </Button>
+      </div>
+
+      {sortedMethods.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <CreditCard className="h-12 w-12 text-muted-foreground mb-4" />
+            <p className="text-muted-foreground">
+              Способы оплаты не добавлены. Добавьте первый способ оплаты.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          {sortedMethods.map((m, index) => (
+            <Card key={m.id}>
+              <CardContent className="flex items-center gap-3 py-3 px-5">
+                <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium">{m.title}</p>
+                  {m.description && (
+                    <p className="text-sm text-muted-foreground truncate">{m.description}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={index === 0}
+                    onClick={() => moveUp(index)}
+                    data-testid={`button-move-up-${m.id}`}
+                  >
+                    <ChevronUp className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={index === sortedMethods.length - 1}
+                    onClick={() => moveDown(index)}
+                    data-testid={`button-move-down-${m.id}`}
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                  <Switch
+                    checked={m.isActive}
+                    onCheckedChange={(checked) =>
+                      updateMutation.mutate({ id: m.id, data: { isActive: checked } })
+                    }
+                    data-testid={`switch-payment-method-${m.id}`}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => openEdit(m)}
+                    data-testid={`button-edit-payment-method-${m.id}`}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setDeleteTarget(m)}
+                    data-testid={`button-delete-payment-method-${m.id}`}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Add / Edit Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {editingMethod ? "Редактировать способ оплаты" : "Добавить способ оплаты"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="payment-title">Название</Label>
+              <Input
+                id="payment-title"
+                value={formTitle}
+                onChange={(e) => setFormTitle(e.target.value)}
+                placeholder="Наличные при получении"
+                data-testid="input-payment-title"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="payment-description">Описание (необязательно)</Label>
+              <Input
+                id="payment-description"
+                value={formDescription}
+                onChange={(e) => setFormDescription(e.target.value)}
+                placeholder="Уточните сумму заранее"
+                data-testid="input-payment-description"
+              />
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={!formTitle.trim() || isSaving}
+              data-testid="button-save-payment-method"
+            >
+              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Сохранить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить способ оплаты?</AlertDialogTitle>
+            <AlertDialogDescription>
+              «{deleteTarget?.title}» будет удалён без возможности восстановления.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+            >
+              Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+
+const DEFAULT_AGENT_SYSTEM_PROMPT = `Вы — профессиональный менеджер по продажам, помогающий клиентам с их запросами.
+
+ВАЖНЫЕ ПРАВИЛА:
+1. НИКОГДА не придумывайте цены, наличие или сроки доставки. Используйте только факты из предоставленного контекста.
+2. Если информации нет, задавайте уточняющие вопросы.
+3. Отвечайте кратко и по существу.
+4. При вопросах о скидках и жалобах — переключайте на оператора.`;
+
+function AgentSettingsTab() {
+  const { toast } = useToast();
+
+  const [companyName, setCompanyName] = useState("");
+  const [specialization, setSpecialization] = useState("");
+  const [warehouseCity, setWarehouseCity] = useState("");
+  const [warrantyMonths, setWarrantyMonths] = useState("");
+  const [warrantyKm, setWarrantyKm] = useState("");
+  const [installDays, setInstallDays] = useState("");
+  const [qrDiscountPercent, setQrDiscountPercent] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [objectionPayment, setObjectionPayment] = useState("");
+  const [objectionOnline, setObjectionOnline] = useState("");
+  const [closingScript, setClosingScript] = useState("");
+  const [customFacts, setCustomFacts] = useState<Array<{ key: string; value: string }>>([]);
+  const [showDefaultPrompt, setShowDefaultPrompt] = useState(false);
+  const [mileageLow, setMileageLow] = useState("");
+  const [mileageMid, setMileageMid] = useState("");
+  const [mileageHigh, setMileageHigh] = useState("");
+
+  const { data: settings, isLoading } = useQuery<TenantAgentSettings>({
+    queryKey: ["/api/agent-settings"],
+  });
+
+  useEffect(() => {
+    if (settings) {
+      setCompanyName(settings.companyName ?? "");
+      setSpecialization(settings.specialization ?? "");
+      setWarehouseCity(settings.warehouseCity ?? "");
+      setWarrantyMonths(settings.warrantyMonths?.toString() ?? "");
+      setWarrantyKm(settings.warrantyKm?.toString() ?? "");
+      setInstallDays(settings.installDays?.toString() ?? "");
+      setQrDiscountPercent(settings.qrDiscountPercent?.toString() ?? "");
+      setSystemPrompt(settings.systemPrompt ?? "");
+      setObjectionPayment(settings.objectionPayment ?? "");
+      setObjectionOnline(settings.objectionOnline ?? "");
+      setClosingScript(settings.closingScript ?? "");
+      const facts = (settings.customFacts as Record<string, string> | null) ?? {};
+      setCustomFacts(Object.entries(facts).map(([key, value]) => ({ key, value: String(value) })));
+      setMileageLow(settings.mileageLow?.toString() ?? "");
+      setMileageMid(settings.mileageMid?.toString() ?? "");
+      setMileageHigh(settings.mileageHigh?.toString() ?? "");
+    }
+  }, [settings]);
+
+  const saveMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await apiRequest("PUT", "/api/agent-settings", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-settings"] });
+      toast({ title: "Настройки агента сохранены" });
+    },
+    onError: () => {
+      toast({ title: "Не удалось сохранить настройки агента", variant: "destructive" });
+    },
+  });
+
+  function handleSave() {
+    const factsObj: Record<string, string> = {};
+    for (const { key, value } of customFacts) {
+      if (key.trim()) factsObj[key.trim()] = value;
+    }
+    saveMutation.mutate({
+      companyName: companyName.trim() || null,
+      specialization: specialization.trim() || null,
+      warehouseCity: warehouseCity.trim() || null,
+      warrantyMonths: warrantyMonths !== "" ? parseInt(warrantyMonths, 10) : null,
+      warrantyKm: warrantyKm !== "" ? parseInt(warrantyKm, 10) : null,
+      installDays: installDays !== "" ? parseInt(installDays, 10) : null,
+      qrDiscountPercent: qrDiscountPercent !== "" ? parseInt(qrDiscountPercent, 10) : null,
+      systemPrompt: systemPrompt.trim() || null,
+      objectionPayment: objectionPayment.trim() || null,
+      objectionOnline: objectionOnline.trim() || null,
+      closingScript: closingScript.trim() || null,
+      customFacts: factsObj,
+      mileageLow: mileageLow !== "" ? parseInt(mileageLow, 10) : null,
+      mileageMid: mileageMid !== "" ? parseInt(mileageMid, 10) : null,
+      mileageHigh: mileageHigh !== "" ? parseInt(mileageHigh, 10) : null,
+    });
+  }
+
+  function addFact() {
+    setCustomFacts((prev) => [...prev, { key: "", value: "" }]);
+  }
+
+  function updateFact(index: number, field: "key" | "value", val: string) {
+    setCustomFacts((prev) => prev.map((f, i) => (i === index ? { ...f, [field]: val } : f)));
+  }
+
+  function removeFact(index: number) {
+    setCustomFacts((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        {[1, 2, 3, 4].map((i) => (
+          <Card key={i}>
+            <CardHeader>
+              <Skeleton className="h-6 w-48" />
+              <Skeleton className="h-4 w-72 mt-1" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-32 w-full" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-6">
+        {/* Section 1: О компании */}
+        <Card>
+          <CardHeader>
+            <CardTitle>О компании</CardTitle>
+            <CardDescription>
+              Эти данные агент использует в разговорах с клиентами
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="agent-company-name">Название компании</Label>
+                <Input
+                  id="agent-company-name"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  placeholder="Название вашей организации"
+                  data-testid="input-agent-company-name"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-specialization">Специализация</Label>
+                <Input
+                  id="agent-specialization"
+                  value={specialization}
+                  onChange={(e) => setSpecialization(e.target.value)}
+                  placeholder="Чем занимается ваша компания"
+                  data-testid="input-agent-specialization"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-warehouse-city">Город склада</Label>
+                <Input
+                  id="agent-warehouse-city"
+                  value={warehouseCity}
+                  onChange={(e) => setWarehouseCity(e.target.value)}
+                  placeholder="Откуда отправляете товар"
+                  data-testid="input-agent-warehouse-city"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-warranty-months">Гарантия (месяцы)</Label>
+                <Input
+                  id="agent-warranty-months"
+                  type="number"
+                  value={warrantyMonths}
+                  onChange={(e) => setWarrantyMonths(e.target.value)}
+                  placeholder="12"
+                  data-testid="input-agent-warranty-months"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-warranty-km">Гарантия (км)</Label>
+                <Input
+                  id="agent-warranty-km"
+                  type="number"
+                  value={warrantyKm}
+                  onChange={(e) => setWarrantyKm(e.target.value)}
+                  placeholder="30000"
+                  data-testid="input-agent-warranty-km"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-install-days">Дней на установку</Label>
+                <Input
+                  id="agent-install-days"
+                  type="number"
+                  value={installDays}
+                  onChange={(e) => setInstallDays(e.target.value)}
+                  placeholder="14"
+                  data-testid="input-agent-install-days"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-qr-discount">Скидка при QR/СБП оплате (%)</Label>
+                <Input
+                  id="agent-qr-discount"
+                  type="number"
+                  value={qrDiscountPercent}
+                  onChange={(e) => setQrDiscountPercent(e.target.value)}
+                  placeholder="10"
+                  data-testid="input-agent-qr-discount"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Section 1b: Диапазоны пробега */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Диапазоны пробега</CardTitle>
+            <CardDescription>
+              Определяет как разбивать варианты на категории по пробегу при двухшаговом диалоге цен
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="agent-mileage-low">Низкий пробег (до, км)</Label>
+                <Input
+                  id="agent-mileage-low"
+                  type="number"
+                  value={mileageLow}
+                  onChange={(e) => setMileageLow(e.target.value)}
+                  placeholder="60000"
+                  data-testid="input-agent-mileage-low"
+                />
+                <p className="text-xs text-muted-foreground">Лучшие варианты — дороже</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-mileage-mid">Средний пробег (до, км)</Label>
+                <Input
+                  id="agent-mileage-mid"
+                  type="number"
+                  value={mileageMid}
+                  onChange={(e) => setMileageMid(e.target.value)}
+                  placeholder="90000"
+                  data-testid="input-agent-mileage-mid"
+                />
+                <p className="text-xs text-muted-foreground">Оптимальные варианты</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="agent-mileage-high">Высокий пробег (от, км)</Label>
+                <Input
+                  id="agent-mileage-high"
+                  type="number"
+                  value={mileageHigh}
+                  onChange={(e) => setMileageHigh(e.target.value)}
+                  placeholder="90000"
+                  data-testid="input-agent-mileage-high"
+                />
+                <p className="text-xs text-muted-foreground">Бюджетные варианты — дешевле</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Section 2: Системный промпт */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Системный промпт</CardTitle>
+            <CardDescription>
+              Основной характер и поведение агента. Если оставить пустым — используется стандартный промпт.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowDefaultPrompt(true)}
+              data-testid="button-view-default-prompt"
+            >
+              <FileText className="mr-2 h-4 w-4" />
+              Посмотреть стандартный промпт
+            </Button>
+            <Textarea
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="Опишите как должен вести себя ваш агент..."
+              className="min-h-[200px] font-mono text-sm"
+              data-testid="textarea-system-prompt"
+            />
+            <p className="text-xs text-muted-foreground">
+              Если заполнено — полностью заменяет стандартный промпт
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Section 3: Скрипты ответов */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Скрипты ответов</CardTitle>
+            <CardDescription>
+              Готовые ответы на типовые возражения клиентов
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="agent-objection-payment">
+                Ответ на «оплата при получении»
+              </Label>
+              <Textarea
+                id="agent-objection-payment"
+                value={objectionPayment}
+                onChange={(e) => setObjectionPayment(e.target.value)}
+                placeholder="Мы не частники, работаем по регламенту организации..."
+                rows={3}
+                data-testid="textarea-objection-payment"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="agent-objection-online">
+                Ответ на «онлайн оплата опасна»
+              </Label>
+              <Textarea
+                id="agent-objection-online"
+                value={objectionOnline}
+                onChange={(e) => setObjectionOnline(e.target.value)}
+                placeholder="Понимаем ваши опасения. При оплате через безопасную сделку..."
+                rows={3}
+                data-testid="textarea-objection-online"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="agent-closing-script">Скрипт закрытия сделки</Label>
+              <Textarea
+                id="agent-closing-script"
+                value={closingScript}
+                onChange={(e) => setClosingScript(e.target.value)}
+                placeholder="Для оформления заказа напишите: ФИО, телефон, email..."
+                rows={3}
+                data-testid="textarea-closing-script"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Section 4: Дополнительные факты */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Дополнительные факты</CardTitle>
+            <CardDescription>
+              Любая дополнительная информация о компании для агента
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {customFacts.map((fact, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <Input
+                  value={fact.key}
+                  onChange={(e) => updateFact(index, "key", e.target.value)}
+                  placeholder="Ключ"
+                  className="flex-1"
+                  data-testid={`fact-key-${index}`}
+                />
+                <Input
+                  value={fact.value}
+                  onChange={(e) => updateFact(index, "value", e.target.value)}
+                  placeholder="Значение"
+                  className="flex-1"
+                  data-testid={`fact-value-${index}`}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => removeFact(index)}
+                  data-testid={`button-remove-fact-${index}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={addFact}
+              data-testid="button-add-fact"
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Добавить факт
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Save button */}
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            onClick={handleSave}
+            disabled={saveMutation.isPending}
+            data-testid="button-save-agent-settings"
+          >
+            {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Save className="mr-2 h-4 w-4" />
+            Сохранить
+          </Button>
+        </div>
+      </div>
+
+      {/* Default prompt dialog */}
+      <Dialog open={showDefaultPrompt} onOpenChange={setShowDefaultPrompt}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Стандартный промпт</DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="max-h-96">
+            <pre className="text-sm whitespace-pre-wrap font-mono bg-muted rounded p-4">
+              {DEFAULT_AGENT_SYSTEM_PROMPT}
+            </pre>
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDefaultPrompt(false)}>
+              Закрыть
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 export default function Settings() {
   const { toast } = useToast();
 
@@ -2776,6 +3950,18 @@ export default function Settings() {
           <TabsTrigger value="ai-behavior" data-testid="tab-ai-behavior">
             <Bot className="mr-2 h-4 w-4" />
             Поведение AI
+          </TabsTrigger>
+          <TabsTrigger value="templates" data-testid="tab-templates">
+            <FileText className="mr-2 h-4 w-4" />
+            Шаблоны
+          </TabsTrigger>
+          <TabsTrigger value="payment-methods" data-testid="tab-payment-methods">
+            <CreditCard className="mr-2 h-4 w-4" />
+            Оплата
+          </TabsTrigger>
+          <TabsTrigger value="agent" data-testid="tab-agent">
+            <Bot className="mr-2 h-4 w-4" />
+            Агент
           </TabsTrigger>
           <TabsTrigger value="channels" data-testid="tab-channels">
             <Link2 className="mr-2 h-4 w-4" />
@@ -3149,6 +4335,18 @@ export default function Settings() {
                 {/* Training Policies */}
                 <TrainingPoliciesSettings />
               </div>
+            </TabsContent>
+
+            <TabsContent value="templates">
+              <TemplatesTab />
+            </TabsContent>
+
+            <TabsContent value="payment-methods">
+              <PaymentMethodsTab />
+            </TabsContent>
+
+            <TabsContent value="agent">
+              <AgentSettingsTab />
             </TabsContent>
 
             <TabsContent value="channels">
