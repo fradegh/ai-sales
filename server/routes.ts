@@ -184,18 +184,18 @@ export async function registerRoutes(
           const mpUser = req.userId ? await storage.getUser(req.userId) : undefined;
           const mpTenantId = mpUser?.tenantId;
           let mpConnected = false;
-          let mpBotInfo: { first_name?: string } | undefined;
+          let mpAccounts: Array<{ displayName?: string | null; label?: string | null }> = [];
           if (mpTenantId) {
             try {
               const { db } = await import("./db");
               const { maxPersonalAccounts } = await import("@shared/schema");
               const { eq } = await import("drizzle-orm");
-              const account = await db.query.maxPersonalAccounts.findFirst({
-                where: eq(maxPersonalAccounts.tenantId, mpTenantId),
-              });
-              if (account && account.status === "authorized") {
+              const rows = await db.select().from(maxPersonalAccounts)
+                .where(eq(maxPersonalAccounts.tenantId, mpTenantId));
+              const authorized = rows.filter((a) => a.status === "authorized");
+              if (authorized.length > 0) {
                 mpConnected = true;
-                mpBotInfo = { first_name: account.displayName ?? undefined };
+                mpAccounts = authorized.map((a) => ({ displayName: a.displayName, label: a.label }));
               }
             } catch {
               // ignore — DB may not have the table yet
@@ -205,7 +205,9 @@ export async function registerRoutes(
             channel: "max_personal",
             enabled: await featureFlagService.isEnabled("MAX_PERSONAL_CHANNEL_ENABLED"),
             connected: mpConnected,
-            botInfo: mpBotInfo,
+            // Legacy single-account field kept for backwards compat
+            botInfo: mpAccounts[0] ? { first_name: mpAccounts[0].displayName ?? undefined } : undefined,
+            accounts: mpAccounts,
           };
         })(),
       ];

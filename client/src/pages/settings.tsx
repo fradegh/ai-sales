@@ -1713,6 +1713,8 @@ type WhatsAppAuthMethod = "qr" | "phone";
 function MaxPersonalCard({ channelStatuses }: Pick<WhatsAppPersonalCardProps, "channelStatuses">) {
   const maxPersonalStatus = channelStatuses?.find(c => c.channel === "max_personal");
   const isConnected = maxPersonalStatus?.connected ?? false;
+  const accounts: Array<{ displayName?: string | null; label?: string | null }> =
+    (maxPersonalStatus as any)?.accounts ?? [];
 
   return (
     <Card>
@@ -1738,14 +1740,19 @@ function MaxPersonalCard({ channelStatuses }: Pick<WhatsAppPersonalCardProps, "c
       </CardHeader>
       <CardContent>
         {isConnected ? (
-          <div className="rounded-md border p-4 bg-green-500/5 flex items-center gap-3">
-            <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0" />
-            <div>
-              <p className="font-medium">
-                Подключён{maxPersonalStatus?.botInfo?.first_name ? ` — ${maxPersonalStatus.botInfo.first_name}` : ""}
-              </p>
-              <p className="text-sm text-muted-foreground">Статус: авторизован</p>
-            </div>
+          <div className="space-y-2">
+            {accounts.map((acc, idx) => (
+              <div key={idx} className="rounded-md border p-3 bg-green-500/5 flex items-center gap-3">
+                <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                <div>
+                  <p className="font-medium text-sm">
+                    {acc.displayName ?? `Аккаунт ${idx + 1}`}
+                    {acc.label ? <span className="text-muted-foreground font-normal"> ({acc.label})</span> : null}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Статус: авторизован</p>
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <div className="rounded-md border p-4 flex items-start gap-3">

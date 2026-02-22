@@ -207,33 +207,44 @@ export default function AdminUsers() {
     },
   });
 
-  const [maxPersonalIdInstance, setMaxPersonalIdInstance] = useState("");
-  const [maxPersonalApiToken, setMaxPersonalApiToken] = useState("");
-
-  interface MaxPersonalStatus {
-    connected: boolean;
-    idInstance?: string;
-    apiTokenInstance?: string;
-    status?: string;
-    displayName?: string;
-    webhookRegistered?: boolean;
+  interface MaxPersonalAccountItem {
+    accountId: string;
+    idInstance: string;
+    apiTokenInstance: string;
+    displayName?: string | null;
+    status: string;
+    webhookRegistered?: boolean | null;
+    label?: string | null;
   }
 
-  const { data: maxPersonalData, isLoading: maxPersonalLoading, refetch: refetchMaxPersonal } = useQuery<MaxPersonalStatus>({
+  interface MaxPersonalListData {
+    accounts: MaxPersonalAccountItem[];
+  }
+
+  const [maxPersonalShowForm, setMaxPersonalShowForm] = useState(false);
+  const [maxPersonalIdInstance, setMaxPersonalIdInstance] = useState("");
+  const [maxPersonalApiToken, setMaxPersonalApiToken] = useState("");
+  const [maxPersonalLabel, setMaxPersonalLabel] = useState("");
+
+  const { data: maxPersonalData, isLoading: maxPersonalLoading, refetch: refetchMaxPersonal } = useQuery<MaxPersonalListData>({
     queryKey: ["/api/admin/users", selectedUser?.id, "max-personal"],
     queryFn: async () => {
       const res = await fetch(`/api/admin/users/${selectedUser?.id}/max-personal`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch MAX Personal account");
+      if (!res.ok) throw new Error("Failed to fetch MAX Personal accounts");
       return res.json();
     },
     enabled: !!selectedUser?.id,
   });
 
-  const saveMaxPersonalMutation = useMutation({
-    mutationFn: async ({ idInstance, apiTokenInstance }: { idInstance: string; apiTokenInstance: string }) => {
+  const maxPersonalAccList = maxPersonalData?.accounts ?? [];
+  const maxPersonalAtLimit = maxPersonalAccList.length >= 5;
+
+  const addMaxPersonalMutation = useMutation({
+    mutationFn: async ({ idInstance, apiTokenInstance, label }: { idInstance: string; apiTokenInstance: string; label?: string }) => {
       const res = await apiRequest("POST", `/api/admin/users/${selectedUser?.id}/max-personal`, {
         idInstance,
         apiTokenInstance,
+        label: label || undefined,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save");
@@ -243,6 +254,8 @@ export default function AdminUsers() {
       toast({ title: "Сохранено", description: "MAX Personal аккаунт подключён" });
       setMaxPersonalIdInstance("");
       setMaxPersonalApiToken("");
+      setMaxPersonalLabel("");
+      setMaxPersonalShowForm(false);
       refetchMaxPersonal();
     },
     onError: (error: Error) => {
@@ -251,8 +264,8 @@ export default function AdminUsers() {
   });
 
   const deleteMaxPersonalMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("DELETE", `/api/admin/users/${selectedUser?.id}/max-personal`);
+    mutationFn: async (accountId: string) => {
+      const res = await apiRequest("DELETE", `/api/admin/users/${selectedUser?.id}/max-personal/${accountId}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to delete");
       return data;
@@ -648,95 +661,133 @@ export default function AdminUsers() {
                             </CardHeader>
                             <CardContent className="space-y-4">
                               <div className="space-y-3">
-                                <p className="text-sm font-medium">MAX Personal (GREEN-API)</p>
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm font-medium">MAX Personal (GREEN-API)</p>
+                                  {!maxPersonalLoading && !maxPersonalAtLimit && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => setMaxPersonalShowForm((v) => !v)}
+                                    >
+                                      <Plus className="h-3 w-3 mr-1" />
+                                      Добавить аккаунт
+                                    </Button>
+                                  )}
+                                </div>
 
                                 {maxPersonalLoading ? (
                                   <div className="flex items-center gap-2 text-muted-foreground">
                                     <Loader2 className="h-4 w-4 animate-spin" />
                                     <span className="text-sm">Загрузка...</span>
                                   </div>
-                                ) : maxPersonalData?.connected ? (
-                                  <div className="rounded-md border p-3 bg-green-500/5 space-y-2">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="flex items-center gap-2">
-                                        <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
-                                        <div>
-                                          <p className="text-sm font-medium">
-                                            Подключён{maxPersonalData.displayName ? ` — ${maxPersonalData.displayName}` : ""}
-                                          </p>
-                                          <p className="text-xs text-muted-foreground">
-                                            Статус: {maxPersonalData.status ?? "—"} · Instance: {maxPersonalData.idInstance}
-                                          </p>
-                                        </div>
-                                      </div>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => deleteMaxPersonalMutation.mutate()}
-                                        disabled={deleteMaxPersonalMutation.isPending}
-                                        data-testid="button-max-personal-disconnect"
-                                      >
-                                        {deleteMaxPersonalMutation.isPending ? (
-                                          <Loader2 className="h-4 w-4 animate-spin" />
-                                        ) : (
-                                          "Отключить"
-                                        )}
-                                      </Button>
-                                    </div>
-                                    {maxPersonalData.webhookRegistered === false && (
-                                      <div className="flex items-center gap-2 text-amber-600 text-xs">
-                                        <AlertCircle className="h-3 w-3 shrink-0" />
-                                        Вебхук не зарегистрирован — входящие сообщения не поступят
+                                ) : (
+                                  <div className="space-y-2">
+                                    {maxPersonalAccList.length === 0 && (
+                                      <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                        <XCircle className="h-4 w-4 shrink-0" />
+                                        Аккаунты не подключены
                                       </div>
                                     )}
-                                  </div>
-                                ) : (
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2 text-muted-foreground text-sm">
-                                      <XCircle className="h-4 w-4 shrink-0" />
-                                      Не подключён
-                                    </div>
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">Instance ID</Label>
-                                        <Input
-                                          placeholder="1234567890"
-                                          value={maxPersonalIdInstance}
-                                          onChange={(e) => setMaxPersonalIdInstance(e.target.value)}
-                                          data-testid="input-max-personal-id-instance"
-                                        />
+
+                                    {maxPersonalAccList.map((acc, idx) => (
+                                      <div key={acc.accountId} className="rounded-md border p-3 bg-green-500/5 space-y-1">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                                            <div className="min-w-0">
+                                              <p className="text-sm font-medium truncate">
+                                                Аккаунт {idx + 1}
+                                                {acc.label ? ` — ${acc.label}` : ""}
+                                                {acc.displayName ? ` (${acc.displayName})` : ""}
+                                              </p>
+                                              <p className="text-xs text-muted-foreground truncate">
+                                                Статус: {acc.status} · Instance: {acc.idInstance}
+                                              </p>
+                                            </div>
+                                          </div>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => deleteMaxPersonalMutation.mutate(acc.accountId)}
+                                            disabled={deleteMaxPersonalMutation.isPending}
+                                            data-testid={`button-max-personal-disconnect-${acc.accountId}`}
+                                          >
+                                            {deleteMaxPersonalMutation.isPending ? (
+                                              <Loader2 className="h-4 w-4 animate-spin" />
+                                            ) : (
+                                              "Удалить"
+                                            )}
+                                          </Button>
+                                        </div>
+                                        {acc.webhookRegistered === false && (
+                                          <div className="flex items-center gap-2 text-amber-600 text-xs">
+                                            <AlertCircle className="h-3 w-3 shrink-0" />
+                                            Вебхук не зарегистрирован — входящие сообщения не поступят
+                                          </div>
+                                        )}
                                       </div>
-                                      <div className="space-y-1">
-                                        <Label className="text-xs">API Token</Label>
-                                        <Input
-                                          placeholder="••••••••••••••••"
-                                          type="password"
-                                          value={maxPersonalApiToken}
-                                          onChange={(e) => setMaxPersonalApiToken(e.target.value)}
-                                          data-testid="input-max-personal-api-token"
-                                        />
+                                    ))}
+
+                                    {maxPersonalAtLimit && (
+                                      <p className="text-xs text-muted-foreground">Максимум 5 аккаунтов достигнут</p>
+                                    )}
+
+                                    {!maxPersonalAtLimit && (maxPersonalShowForm || maxPersonalAccList.length === 0) && (
+                                      <div className="rounded-md border p-3 space-y-2 bg-muted/30">
+                                        <p className="text-xs text-muted-foreground font-medium">
+                                          Добавить аккаунт ({maxPersonalAccList.length}/5 использовано)
+                                        </p>
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">Instance ID</Label>
+                                          <Input
+                                            placeholder="1234567890"
+                                            value={maxPersonalIdInstance}
+                                            onChange={(e) => setMaxPersonalIdInstance(e.target.value)}
+                                            data-testid="input-max-personal-id-instance"
+                                          />
+                                        </div>
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">API Token</Label>
+                                          <Input
+                                            placeholder="••••••••••••••••"
+                                            type="password"
+                                            value={maxPersonalApiToken}
+                                            onChange={(e) => setMaxPersonalApiToken(e.target.value)}
+                                            data-testid="input-max-personal-api-token"
+                                          />
+                                        </div>
+                                        <div className="space-y-1">
+                                          <Label className="text-xs">Метка (необязательно)</Label>
+                                          <Input
+                                            placeholder="Основной, Продажи…"
+                                            value={maxPersonalLabel}
+                                            onChange={(e) => setMaxPersonalLabel(e.target.value)}
+                                            data-testid="input-max-personal-label"
+                                          />
+                                        </div>
+                                        <Button
+                                          size="sm"
+                                          onClick={() =>
+                                            addMaxPersonalMutation.mutate({
+                                              idInstance: maxPersonalIdInstance,
+                                              apiTokenInstance: maxPersonalApiToken,
+                                              label: maxPersonalLabel || undefined,
+                                            })
+                                          }
+                                          disabled={
+                                            !maxPersonalIdInstance ||
+                                            !maxPersonalApiToken ||
+                                            addMaxPersonalMutation.isPending
+                                          }
+                                          data-testid="button-max-personal-save"
+                                        >
+                                          {addMaxPersonalMutation.isPending ? (
+                                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                          ) : null}
+                                          Сохранить и активировать
+                                        </Button>
                                       </div>
-                                    </div>
-                                    <Button
-                                      size="sm"
-                                      onClick={() =>
-                                        saveMaxPersonalMutation.mutate({
-                                          idInstance: maxPersonalIdInstance,
-                                          apiTokenInstance: maxPersonalApiToken,
-                                        })
-                                      }
-                                      disabled={
-                                        !maxPersonalIdInstance ||
-                                        !maxPersonalApiToken ||
-                                        saveMaxPersonalMutation.isPending
-                                      }
-                                      data-testid="button-max-personal-save"
-                                    >
-                                      {saveMaxPersonalMutation.isPending ? (
-                                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                      ) : null}
-                                      Сохранить и активировать
-                                    </Button>
+                                    )}
                                   </div>
                                 )}
                               </div>

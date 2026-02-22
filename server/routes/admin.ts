@@ -1912,11 +1912,25 @@ router.get(
 
 // ============ MAX PERSONAL (GREEN-API) ADMIN ROUTES ============
 
-const maxPersonalCredentialsSchema = z.object({
+const MAX_PERSONAL_ACCOUNTS_LIMIT = 5;
+
+const maxPersonalAddSchema = z.object({
   idInstance: z.string().min(1),
   apiTokenInstance: z.string().min(1),
+  label: z.string().optional(),
 });
 
+const maxPersonalPatchSchema = z.object({
+  label: z.string(),
+});
+
+function maskToken(token: string): string {
+  return token.length > 4
+    ? `${"•".repeat(token.length - 4)}${token.slice(-4)}`
+    : "••••";
+}
+
+// GET /users/:userId/max-personal — return all accounts for tenant
 router.get(
   "/users/:userId/max-personal",
   requireAuth,
@@ -1931,44 +1945,38 @@ router.get(
       }
       const { tenantId } = user[0];
 
-      let account: typeof maxPersonalAccounts.$inferSelect | undefined;
+      let accounts: (typeof maxPersonalAccounts.$inferSelect)[] = [];
       try {
-        account = await db.query.maxPersonalAccounts.findFirst({
-          where: eq(maxPersonalAccounts.tenantId, tenantId),
-        });
+        accounts = await db.select().from(maxPersonalAccounts)
+          .where(eq(maxPersonalAccounts.tenantId, tenantId))
+          .orderBy(maxPersonalAccounts.createdAt);
       } catch (dbErr: any) {
-        // Table may not exist yet if the migration hasn't been applied
         if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
           console.warn("[Admin] max_personal_accounts table not found — migration pending");
-          return res.json({ connected: false });
+          return res.json({ accounts: [] });
         }
         throw dbErr;
       }
 
-      if (!account) {
-        return res.json({ connected: false });
-      }
-
-      const maskedToken =
-        account.apiTokenInstance.length > 4
-          ? `${"•".repeat(account.apiTokenInstance.length - 4)}${account.apiTokenInstance.slice(-4)}`
-          : "••••";
-
       return res.json({
-        connected: true,
-        idInstance: account.idInstance,
-        apiTokenInstance: maskedToken,
-        status: account.status,
-        displayName: account.displayName,
-        webhookRegistered: account.webhookRegistered,
+        accounts: accounts.map((a) => ({
+          accountId: a.accountId,
+          idInstance: a.idInstance,
+          apiTokenInstance: maskToken(a.apiTokenInstance),
+          displayName: a.displayName,
+          status: a.status,
+          webhookRegistered: a.webhookRegistered,
+          label: a.label,
+        })),
       });
     } catch (error) {
-      console.error("[Admin] Error fetching MAX Personal account:", error);
-      res.status(500).json({ error: "Failed to fetch MAX Personal account" });
+      console.error("[Admin] Error fetching MAX Personal accounts:", error);
+      res.status(500).json({ error: "Failed to fetch MAX Personal accounts" });
     }
   }
 );
 
+// POST /users/:userId/max-personal — add a new account (up to 5)
 router.post(
   "/users/:userId/max-personal",
   requireAuth,
@@ -1976,11 +1984,11 @@ router.post(
   async (req, res) => {
     try {
       const { userId } = req.params;
-      const parsed = maxPersonalCredentialsSchema.safeParse(req.body);
+      const parsed = maxPersonalAddSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: "idInstance and apiTokenInstance are required" });
       }
-      const { idInstance, apiTokenInstance } = parsed.data;
+      const { idInstance, apiTokenInstance, label } = parsed.data;
 
       const userRow = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, userId)).limit(1);
       if (!userRow[0]?.tenantId) {
@@ -1988,9 +1996,32 @@ router.post(
       }
       const { tenantId } = userRow[0];
 
+      // 1. Check account limit
+      let existingAccounts: (typeof maxPersonalAccounts.$inferSelect)[] = [];
+      try {
+        existingAccounts = await db.select().from(maxPersonalAccounts)
+          .where(eq(maxPersonalAccounts.tenantId, tenantId));
+      } catch (dbErr: any) {
+        if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
+          console.warn("[Admin] max_personal_accounts table not found — migration pending");
+          return res.status(503).json({ error: "MAX Personal feature not yet available. Run database migrations." });
+        }
+        throw dbErr;
+      }
+
+      if (existingAccounts.length >= MAX_PERSONAL_ACCOUNTS_LIMIT) {
+        return res.status(400).json({ error: `Максимум ${MAX_PERSONAL_ACCOUNTS_LIMIT} аккаунтов достигнут` });
+      }
+
+      // 2. Check duplicate idInstance for this tenant
+      const duplicate = existingAccounts.find((a) => a.idInstance === idInstance);
+      if (duplicate) {
+        return res.status(400).json({ error: "Этот инстанс уже добавлен для данного тенанта" });
+      }
+
       const { maxGreenApiAdapter } = await import("../services/max-green-api-adapter");
 
-      // 1. Verify state
+      // 3. Verify state
       let state: string;
       try {
         state = await maxGreenApiAdapter.getState(idInstance, apiTokenInstance);
@@ -2004,7 +2035,7 @@ router.post(
         });
       }
 
-      // 2. Get account display name
+      // 4. Get account display name
       let displayName: string | undefined;
       try {
         const info = await maxGreenApiAdapter.getAccountInfo(idInstance, apiTokenInstance);
@@ -2013,9 +2044,11 @@ router.post(
         // non-fatal
       }
 
-      // 3. Register webhook
+      // 5. Generate accountId and register webhook with it
+      const { randomUUID } = await import("crypto");
+      const accountId = randomUUID();
       const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
-      const webhookUrl = `${appUrl}/webhooks/max-personal/${tenantId}`;
+      const webhookUrl = `${appUrl}/webhooks/max-personal/${tenantId}/${accountId}`;
       let webhookRegistered = false;
       try {
         await maxGreenApiAdapter.setWebhook(idInstance, apiTokenInstance, webhookUrl);
@@ -2024,48 +2057,26 @@ router.post(
         console.error("[Admin] GREEN-API setWebhook failed:", err.message);
       }
 
-      // 4. Upsert record
-      let existing: typeof maxPersonalAccounts.$inferSelect | undefined;
-      try {
-        existing = await db.query.maxPersonalAccounts.findFirst({
-          where: eq(maxPersonalAccounts.tenantId, tenantId),
-        });
-      } catch (dbErr: any) {
-        if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
-          console.warn("[Admin] max_personal_accounts table not found — migration pending");
-          return res.status(503).json({ error: "MAX Personal feature not yet available. Run database migrations." });
-        }
-        throw dbErr;
-      }
-
-      if (existing) {
-        await db
-          .update(maxPersonalAccounts)
-          .set({
-            idInstance,
-            apiTokenInstance,
-            displayName: displayName ?? null,
-            status: "authorized",
-            webhookRegistered,
-            updatedAt: new Date(),
-          })
-          .where(eq(maxPersonalAccounts.tenantId, tenantId));
-      } else {
-        await db.insert(maxPersonalAccounts).values({
-          tenantId,
-          idInstance,
-          apiTokenInstance,
-          displayName: displayName ?? null,
-          status: "authorized",
-          webhookRegistered,
-        });
-      }
+      // 6. Insert new row
+      const [inserted] = await db.insert(maxPersonalAccounts).values({
+        tenantId,
+        accountId,
+        idInstance,
+        apiTokenInstance,
+        label: label ?? null,
+        displayName: displayName ?? null,
+        status: "authorized",
+        webhookRegistered,
+      }).returning();
 
       return res.json({
-        success: true,
-        status: "authorized",
-        displayName,
-        webhookRegistered,
+        accountId: inserted.accountId,
+        idInstance: inserted.idInstance,
+        apiTokenInstance: maskToken(inserted.apiTokenInstance),
+        displayName: inserted.displayName,
+        status: inserted.status,
+        webhookRegistered: inserted.webhookRegistered,
+        label: inserted.label,
       });
     } catch (error) {
       console.error("[Admin] Error saving MAX Personal account:", error);
@@ -2074,13 +2085,50 @@ router.post(
   }
 );
 
-router.delete(
-  "/users/:userId/max-personal",
+// PATCH /users/:userId/max-personal/:accountId — update label
+router.patch(
+  "/users/:userId/max-personal/:accountId",
   requireAuth,
   requirePlatformAdmin(),
   async (req, res) => {
     try {
-      const { userId } = req.params;
+      const { userId, accountId } = req.params;
+      const parsed = maxPersonalPatchSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "label is required" });
+      }
+
+      const userRow = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, userId)).limit(1);
+      if (!userRow[0]?.tenantId) {
+        return res.status(404).json({ error: "User or tenant not found" });
+      }
+      const { tenantId } = userRow[0];
+
+      const [updated] = await db.update(maxPersonalAccounts)
+        .set({ label: parsed.data.label, updatedAt: new Date() })
+        .where(and(eq(maxPersonalAccounts.tenantId, tenantId), eq(maxPersonalAccounts.accountId, accountId)))
+        .returning();
+
+      if (!updated) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      return res.json({ success: true, label: updated.label });
+    } catch (error) {
+      console.error("[Admin] Error updating MAX Personal account label:", error);
+      res.status(500).json({ error: "Failed to update label" });
+    }
+  }
+);
+
+// DELETE /users/:userId/max-personal/:accountId — delete specific account
+router.delete(
+  "/users/:userId/max-personal/:accountId",
+  requireAuth,
+  requirePlatformAdmin(),
+  async (req, res) => {
+    try {
+      const { userId, accountId } = req.params;
 
       const userRow = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, userId)).limit(1);
       if (!userRow[0]?.tenantId) {
@@ -2091,7 +2139,7 @@ router.delete(
       let account: typeof maxPersonalAccounts.$inferSelect | undefined;
       try {
         account = await db.query.maxPersonalAccounts.findFirst({
-          where: eq(maxPersonalAccounts.tenantId, tenantId),
+          where: and(eq(maxPersonalAccounts.tenantId, tenantId), eq(maxPersonalAccounts.accountId, accountId)),
         });
       } catch (dbErr: any) {
         if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
@@ -2101,17 +2149,20 @@ router.delete(
         throw dbErr;
       }
 
-      if (account) {
-        // Optionally clear webhook
-        try {
-          const { maxGreenApiAdapter } = await import("../services/max-green-api-adapter");
-          await maxGreenApiAdapter.setWebhook(account.idInstance, account.apiTokenInstance, "");
-        } catch {
-          // non-fatal
-        }
-
-        await db.delete(maxPersonalAccounts).where(eq(maxPersonalAccounts.tenantId, tenantId));
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
       }
+
+      // Clear webhook on GREEN-API
+      try {
+        const { maxGreenApiAdapter } = await import("../services/max-green-api-adapter");
+        await maxGreenApiAdapter.setWebhook(account.idInstance, account.apiTokenInstance, "");
+      } catch {
+        // non-fatal
+      }
+
+      await db.delete(maxPersonalAccounts)
+        .where(and(eq(maxPersonalAccounts.tenantId, tenantId), eq(maxPersonalAccounts.accountId, accountId)));
 
       return res.json({ success: true });
     } catch (error) {

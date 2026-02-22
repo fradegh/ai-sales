@@ -11,7 +11,7 @@ import type { ChannelType } from "@shared/schema";
 import { maxGreenApiAdapter } from "./max-green-api-adapter";
 import { db } from "../db";
 import { maxPersonalAccounts } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 export class MaxPersonalAdapter implements ChannelAdapter {
   readonly name: ChannelType = "max_personal";
@@ -83,6 +83,7 @@ export class MaxPersonalAdapter implements ChannelAdapter {
 
   /**
    * Preferred send path — use when tenantId is known.
+   * Routes to the first authorized account for the tenant.
    */
   async sendMessageForTenant(
     tenantId: string,
@@ -91,7 +92,10 @@ export class MaxPersonalAdapter implements ChannelAdapter {
     attachments?: Array<{ url: string; mimeType?: string; fileName?: string; caption?: string }>
   ): Promise<ChannelSendResult> {
     const account = await db.query.maxPersonalAccounts.findFirst({
-      where: eq(maxPersonalAccounts.tenantId, tenantId),
+      where: and(
+        eq(maxPersonalAccounts.tenantId, tenantId),
+        eq(maxPersonalAccounts.status, "authorized"),
+      ),
     });
     if (!account) {
       return { success: false, error: "No MAX Personal account connected" };

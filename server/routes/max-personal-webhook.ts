@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db";
 import { maxPersonalAccounts } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { ParsedIncomingMessage, ParsedAttachment } from "../services/channel-adapter";
 import { processIncomingMessageFull } from "../services/inbound-message-handler";
 
@@ -66,19 +66,23 @@ function buildAttachment(msgData: GreenApiMessageData): ParsedAttachment | null 
   };
 }
 
-// Public endpoint — no auth, GREEN-API posts here
-router.post("/:tenantId", async (req, res) => {
-  const { tenantId } = req.params;
+// Public endpoint — no auth, GREEN-API posts here.
+// Route includes accountId to prevent cross-tenant spoofing.
+router.post("/:tenantId/:accountId", async (req, res) => {
+  const { tenantId, accountId } = req.params;
 
   try {
-    // Verify the tenant has a configured MAX Personal account
+    // Verify by both tenantId and accountId — prevents cross-tenant spoofing
     const account = await db.query.maxPersonalAccounts.findFirst({
-      where: eq(maxPersonalAccounts.tenantId, tenantId),
+      where: and(
+        eq(maxPersonalAccounts.tenantId, tenantId),
+        eq(maxPersonalAccounts.accountId, accountId),
+      ),
     });
 
     if (!account) {
-      console.warn(`[MaxPersonalWebhook] Unknown tenant: ${tenantId}`);
-      return res.status(404).json({ error: "Tenant not found" });
+      console.warn(`[MaxPersonalWebhook] Unknown tenant/account: ${tenantId}/${accountId}`);
+      return res.status(404).json({ error: "Account not found" });
     }
 
     const payload = req.body as GreenApiWebhook;
@@ -127,7 +131,7 @@ router.post("/:tenantId", async (req, res) => {
 
     await processIncomingMessageFull(tenantId, parsed);
 
-    console.log(`[MaxPersonalWebhook] Processed ${msgType} from ${sender.chatId} for tenant ${tenantId}`);
+    console.log(`[MaxPersonalWebhook] Processed ${msgType} from ${sender.chatId} for tenant ${tenantId} account ${accountId}`);
     return res.json({ ok: true });
   } catch (error: any) {
     console.error("[MaxPersonalWebhook] Error:", error.message);
