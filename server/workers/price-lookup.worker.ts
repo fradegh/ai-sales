@@ -370,6 +370,19 @@ async function estimatePriceFromAI(
   }
 }
 
+// ─── Transmission model validation ───────────────────────────────────────────
+
+function isValidTransmissionModel(model: string | null): boolean {
+  if (!model) return false;
+  if (model.length > 12) return false;
+  // Reject internal catalog codes that contain 4+ consecutive digits
+  // e.g. M3MHD987579 contains "987579" — 6 consecutive digits
+  if (/\d{4,}/.test(model)) return false;
+  // Valid automotive naming patterns: U660E, F4A42, RE4R03A, JF011E, DQ250, QCE, 09G, AW55-51SN
+  const validPattern = /^[A-Z]{1,4}[\d]{1,3}[A-Z0-9]{0,5}(-[A-Z0-9]{1,5})?$/;
+  return validPattern.test(model);
+}
+
 // ─── OEM lookup flow (new global cache + AI search) ──────────────────────────
 
 async function lookupPricesByOem(
@@ -407,7 +420,7 @@ async function lookupPricesByOem(
   // 2. Identify transmission model from OEM.
   // If the vehicle lookup already resolved the model name, skip the GPT call entirely.
   let identification: TransmissionIdentification;
-  if (oemModelHint) {
+  if (oemModelHint && isValidTransmissionModel(oemModelHint)) {
     identification = {
       modelName: oemModelHint,
       manufacturer: null,
@@ -417,6 +430,9 @@ async function lookupPricesByOem(
     };
     console.log(`[PriceLookupWorker] Using oemModelHint "${oemModelHint}" for OEM "${oem}" — skipping GPT identification`);
   } else {
+    if (oemModelHint && !isValidTransmissionModel(oemModelHint)) {
+      console.log(`[VehicleLookupWorker] oemModelHint "${oemModelHint}" rejected as internal code — will use GPT identification`);
+    }
     console.log(`[PriceLookupWorker] Identifying transmission for OEM "${oem}"`);
     identification = await identifyTransmissionByOem(oem, vehicleContext);
     console.log(
