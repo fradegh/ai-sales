@@ -42,6 +42,7 @@ interface ChatInterfaceProps {
   onEscalate: (suggestionId: string) => void;
   onSendManual: (content: string, file?: File) => void;
   onPhoneClick?: (phoneNumber: string) => void;
+  onSimulateCustomerReply?: (message: string) => void;
   isLoading?: boolean;
 }
 
@@ -350,6 +351,7 @@ export function ChatInterface({
   onEscalate,
   onSendManual,
   onPhoneClick,
+  onSimulateCustomerReply,
   isLoading,
 }: ChatInterfaceProps) {
   const [manualMessage, setManualMessage] = useState("");
@@ -360,6 +362,8 @@ export function ChatInterface({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [customerReplyText, setCustomerReplyText] = useState("");
+  const [showCustomerReplyInput, setShowCustomerReplyInput] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevConversationId = useRef<string | null>(null);
@@ -455,6 +459,13 @@ export function ChatInterface({
     onSendManual(manualMessage, selectedFile ?? undefined);
     setManualMessage("");
     clearFile();
+  };
+
+  const handleSendCustomerReply = () => {
+    if (!customerReplyText.trim() || !onSimulateCustomerReply) return;
+    onSimulateCustomerReply(customerReplyText.trim());
+    setCustomerReplyText("");
+    setShowCustomerReplyInput(false);
   };
 
   const handleApproveEdit = () => {
@@ -897,6 +908,64 @@ export function ChatInterface({
           <p className="mt-1.5 text-xs text-muted-foreground">
             💡 Вставьте фото из буфера обмена (Ctrl+V) или нажмите <Paperclip className="inline h-3 w-3" />
           </p>
+        )}
+
+        {onSimulateCustomerReply && (
+          <div className="mt-3 border-t pt-3">
+            {showCustomerReplyInput ? (
+              <div className="flex gap-2">
+                <Textarea
+                  placeholder="Сообщение от клиента..."
+                  value={customerReplyText}
+                  onChange={(e) => setCustomerReplyText(e.target.value)}
+                  className="min-h-[44px] max-h-[80px] resize-none text-sm"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendCustomerReply();
+                    }
+                    if (e.key === "Escape") {
+                      setShowCustomerReplyInput(false);
+                      setCustomerReplyText("");
+                    }
+                  }}
+                  autoFocus
+                  data-testid="textarea-customer-reply"
+                />
+                <div className="flex flex-col gap-1">
+                  <Button
+                    size="icon"
+                    variant="secondary"
+                    onClick={handleSendCustomerReply}
+                    disabled={!customerReplyText.trim()}
+                    title="Отправить от клиента"
+                    data-testid="button-send-customer-reply"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => { setShowCustomerReplyInput(false); setCustomerReplyText(""); }}
+                    title="Отмена"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-muted-foreground hover:text-foreground"
+                onClick={() => setShowCustomerReplyInput(true)}
+                data-testid="button-reply-as-customer"
+              >
+                <User className="mr-2 h-3.5 w-3.5" />
+                Ответить от клиента
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </div>

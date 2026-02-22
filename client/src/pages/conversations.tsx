@@ -340,6 +340,22 @@ export default function Conversations() {
     },
   });
 
+  const replyAsCustomerMutation = useMutation({
+    mutationFn: async ({ conversationId, message }: { conversationId: string; message: string }) => {
+      const res = await apiRequest("POST", "/api/test/simulate-message", { conversationId, message });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Ошибка отправки сообщения");
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations", selectedId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Не удалось отправить сообщение от клиента", description: error.message, variant: "destructive" });
+    },
+  });
+
   const handleSimulateSubmit = async () => {
     if (!testName.trim() || !testPhone.trim() || (!testMessage.trim() && !testImage)) {
       toast({ title: "Заполните имя, телефон и сообщение (или прикрепите фото)", variant: "destructive" });
@@ -620,6 +636,11 @@ export default function Conversations() {
               onEscalate={(id) => escalateMutation.mutate(id)}
               onSendManual={(content, file) => sendManualMutation.mutate({ content, file })}
               onPhoneClick={handlePhoneClick}
+              onSimulateCustomerReply={
+                conversationDetail?.channel?.type === "mock" && selectedId
+                  ? (message) => replyAsCustomerMutation.mutate({ conversationId: selectedId, message })
+                  : undefined
+              }
               isLoading={detailLoading}
             />
             {/* Desktop customer panel button */}

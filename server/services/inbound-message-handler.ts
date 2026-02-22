@@ -443,10 +443,11 @@ export async function processIncomingMessageFull(
         const tenant = await storage.getTenant(tenantId) ?? await storage.getDefaultTenant();
         if (tenant) {
           const templates = getMergedGearboxTemplates(tenant);
+          const idTypeLabel = vehicleDet.idType === "VIN" ? "VIN-коду" : "номеру кузова";
           const suggestion = await storage.createAiSuggestion({
             conversationId: result.conversationId,
             messageId: result.messageId,
-            suggestedReply: templates.gearboxTagRequest,
+            suggestedReply: fillGearboxTemplate(templates.gearboxTagRequest, { idType: idTypeLabel }),
             intent: "gearbox_tag_request",
             confidence: 1,
             needsApproval: true,

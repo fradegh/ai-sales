@@ -1607,19 +1607,41 @@ export async function registerRoutes(
           return res.status(403).json({ error: "User not associated with a tenant" });
         }
 
-        const { customerName, customerPhone, message, imageBase64, imageMimeType } = req.body as {
+        const { customerName, customerPhone, message, imageBase64, imageMimeType, conversationId } = req.body as {
           customerName?: string;
           customerPhone?: string;
           message?: string;
           imageBase64?: string;
           imageMimeType?: string;
+          conversationId?: string;
         };
 
-        if (!customerName || !customerPhone || (!message && !imageBase64)) {
-          return res.status(400).json({ error: "Missing required fields: customerName, customerPhone, and message or image" });
+        let resolvedName: string;
+        let resolvedPhone: string;
+
+        if (conversationId) {
+          // Reuse existing conversation — look up customer from it
+          const existingConv = await storage.getConversationWithCustomer(conversationId);
+          if (!existingConv || existingConv.tenantId !== user.tenantId) {
+            return res.status(404).json({ error: "Conversation not found" });
+          }
+          if (!existingConv.customer?.phone) {
+            return res.status(400).json({ error: "Customer phone not found for this conversation" });
+          }
+          if (!message && !imageBase64) {
+            return res.status(400).json({ error: "Missing required field: message or image" });
+          }
+          resolvedName = existingConv.customer.name || "Test Customer";
+          resolvedPhone = existingConv.customer.phone;
+        } else {
+          if (!customerName || !customerPhone || (!message && !imageBase64)) {
+            return res.status(400).json({ error: "Missing required fields: customerName, customerPhone, and message or image" });
+          }
+          resolvedName = customerName;
+          resolvedPhone = customerPhone;
         }
 
-        const externalUserId = customerPhone.replace(/\D/g, "") || `test_${Date.now()}`;
+        const externalUserId = resolvedPhone.replace(/\D/g, "") || `test_${Date.now()}`;
 
         const { processIncomingMessageFull } = await import("./services/inbound-message-handler");
 
@@ -1631,8 +1653,8 @@ export async function registerRoutes(
           timestamp: new Date(),
           channel: "mock" as const,
           metadata: {
-            firstName: customerName,
-            phone: customerPhone,
+            firstName: resolvedName,
+            phone: resolvedPhone,
           },
           attachments: imageBase64
             ? [

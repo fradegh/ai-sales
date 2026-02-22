@@ -30,17 +30,22 @@ function computeLookupConfidence(gearbox: GearboxInfo, evidence: Record<string, 
   return Math.max(0, Math.min(1, c));
 }
 
+function idTypeToLabel(idType: string): string {
+  return idType === "VIN" ? "VIN-коду" : "номеру кузова";
+}
+
 function buildResultSuggestionText(
   templates: { gearboxLookupFound: string; gearboxLookupModelOnly: string; gearboxTagRequest: string; gearboxLookupFallback: string; gearboxNoVin: string },
   gearbox: GearboxInfo,
   evidence: Record<string, unknown>,
-  lookupConfidence: number
+  lookupConfidence: number,
+  idType: string
 ): string {
   const source = (evidence.sourceSelected as string) ?? (evidence.source as string) ?? "";
   const oem = gearbox.oem ?? "";
   const model = gearbox.model ?? "";
   const factoryCode = gearbox.factoryCode ?? "";
-  const params = { oem, model, source, factoryCode };
+  const params = { oem, model, source, factoryCode, idType: idTypeToLabel(idType) };
 
   if (gearbox.oemStatus === "MODEL_ONLY") {
     return fillGearboxTemplate(templates.gearboxLookupModelOnly, params);
@@ -61,10 +66,11 @@ async function createResultSuggestionIfNeeded(params: {
   gearbox: GearboxInfo;
   evidence: Record<string, unknown>;
   lookupConfidence: number;
+  idType: string;
 }): Promise<void> {
-  const { tenantId, conversationId, messageId, gearbox, evidence, lookupConfidence } = params;
+  const { tenantId, conversationId, messageId, gearbox, evidence, lookupConfidence, idType } = params;
   const templates = await storage.getTenantTemplates(tenantId);
-  const suggestedReply = buildResultSuggestionText(templates, gearbox, evidence, lookupConfidence);
+  const suggestedReply = buildResultSuggestionText(templates, gearbox, evidence, lookupConfidence, idType);
 
   const intent =
     (gearbox.oemStatus === "FOUND" && gearbox.oem) || gearbox.oemStatus === "MODEL_ONLY"
@@ -264,6 +270,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       gearbox,
       evidence: lookupResult.evidence as Record<string, unknown>,
       lookupConfidence,
+      idType,
     });
 
     const isModelOnly = gearbox.oemStatus === "MODEL_ONLY" && !!gearbox.model;
