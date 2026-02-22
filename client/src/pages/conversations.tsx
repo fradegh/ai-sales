@@ -637,7 +637,7 @@ export default function Conversations() {
               onSendManual={(content, file) => sendManualMutation.mutate({ content, file })}
               onPhoneClick={handlePhoneClick}
               onSimulateCustomerReply={
-                conversationDetail?.channel?.type === "mock" && selectedId
+                conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId
                   ? (message) => replyAsCustomerMutation.mutate({ conversationId: selectedId, message })
                   : undefined
               }
