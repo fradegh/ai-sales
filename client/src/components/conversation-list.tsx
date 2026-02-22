@@ -82,8 +82,8 @@ export function ConversationList({
   };
 
   return (
-    <div className="flex h-full flex-col border-r">
-      <div className="border-b p-3 flex flex-col gap-2">
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="border-b p-3 flex flex-col gap-2 shrink-0">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -104,7 +104,7 @@ export function ConversationList({
           </Button>
         )}
       </div>
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 w-full overflow-hidden">
         {isLoading ? (
           <div className="space-y-2 p-3">
             {[1, 2, 3, 4, 5].map((i) => (
@@ -127,12 +127,12 @@ export function ConversationList({
             </p>
           </div>
         ) : (
-          <div className="p-2">
+          <div className="p-2 w-full">
             {conversations.map((conversation) => (
               <div
                 key={conversation.id}
                 className={cn(
-                  "group relative flex w-full gap-3 rounded-md p-3 text-left transition-colors hover-elevate cursor-pointer",
+                  "group relative flex w-full max-w-full gap-3 rounded-md p-3 text-left transition-colors hover-elevate cursor-pointer",
                   selectedId === conversation.id && "bg-accent"
                 )}
                 data-testid={`conversation-item-${conversation.id}`}

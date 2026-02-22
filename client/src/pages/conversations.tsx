@@ -204,7 +204,7 @@ export default function Conversations() {
   return (
     <div className="flex h-full overflow-hidden">
       {/* Conversation List - hidden on mobile when chat is open */}
-      <div className={`w-80 shrink-0 border-r flex flex-col ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`w-80 shrink-0 border-r flex flex-col overflow-hidden ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
         <ConversationList
           conversations={conversations || []}
           selectedId={selectedId || undefined}
