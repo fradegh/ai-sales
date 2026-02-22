@@ -326,9 +326,13 @@ interface AiPriceEstimate {
 
 async function estimatePriceFromAI(
   oem: string,
-  identification: { modelName: string | null; manufacturer: string | null }
+  identification: { modelName: string | null; manufacturer: string | null },
+  vehicleContext?: VehicleContext
 ): Promise<AiPriceEstimate | null> {
   try {
+    const vehicleLine = vehicleContext
+      ? `Vehicle: ${vehicleContext.make ?? "unknown"} ${vehicleContext.model ?? "unknown"}, year: ${vehicleContext.year ?? "unknown"}, engine: ${vehicleContext.engine ?? "unknown"}\n`
+      : "";
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -338,6 +342,7 @@ async function estimatePriceFromAI(
             `You are an expert in the used auto parts market in Russia (drom.ru, avito.ru, farpost.ru).\n` +
             `Give approximate market prices for a used контрактная transmission with OEM code "${oem}" ` +
             `(${identification.modelName ?? oem}, manufacturer: ${identification.manufacturer ?? "unknown"}).\n` +
+            vehicleLine +
             `Respond ONLY with valid JSON, no markdown:\n` +
             `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
             `If uncertain, give a wider range. Always return numbers.`,
@@ -436,7 +441,7 @@ async function lookupPricesByOem(
 
     // AI price estimate fallback when web search returns 0 listings
     if (isNotFound) {
-      const aiEstimate = await estimatePriceFromAI(oem, identification);
+      const aiEstimate = await estimatePriceFromAI(oem, identification, vehicleContext);
       if (aiEstimate) {
         const { priceMin, priceMax } = aiEstimate;
         const avgPrice = Math.round((priceMin + priceMax) / 2);
