@@ -382,7 +382,19 @@ async function lookupPricesByOem(
     console.log(
       `[PriceLookupWorker] Using global cached snapshot ${cached.id} for OEM "${oem}" (source: ${cached.source})`
     );
-    await createPriceSuggestions(tenantId, conversationId, cached, agentSettings);
+    if (cached.source === "ai_estimate") {
+      // ai_estimate snapshots have no listings — use the same custom reply text as when first created
+      const displayName = cached.modelName ?? cached.oem ?? oem;
+      const priceMin = cached.minPrice ?? 0;
+      const priceMax = cached.maxPrice ?? 0;
+      const suggestedReply =
+        `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+        `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
+      await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.5);
+      await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
+    } else {
+      await createPriceSuggestions(tenantId, conversationId, cached, agentSettings);
+    }
     return;
   }
 
@@ -727,6 +739,8 @@ async function lookupPricesByFallback(
 
 async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
   const { tenantId, conversationId, oem, oemModelHint, searchFallback, isModelOnly } = job.data;
+
+  console.log(`[PriceLookupWorker] oemModelHint received: ${oemModelHint ?? "none"}`);
 
   if (oem) {
     // New flow: global cache + AI identification + OpenAI web search
