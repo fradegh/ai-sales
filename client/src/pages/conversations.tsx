@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { User, ArrowLeft } from "lucide-react";
+import { User, ArrowLeft, Send, X } from "lucide-react";
 import type { ConversationWithCustomer, ConversationDetail } from "@shared/schema";
 import type { ChannelFilter } from "@/components/channel-tabs";
 
@@ -34,6 +34,8 @@ export default function Conversations() {
   const [testImagePreviewUrl, setTestImagePreviewUrl] = useState<string | null>(null);
   const testImageInputRef = useRef<HTMLInputElement>(null);
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
+  const [replyAsCustomerText, setReplyAsCustomerText] = useState("");
+  const [showReplyAsCustomer, setShowReplyAsCustomer] = useState(false);
 
   // "Новый диалог" modal state
   const [newDialogOpen, setNewDialogOpen] = useState(false);
@@ -618,8 +620,60 @@ export default function Conversations() {
                     <SheetHeader>
                       <SheetTitle>Карточка клиента</SheetTitle>
                     </SheetHeader>
-                    <div className="mt-4">
+                    <div className="mt-4 flex flex-col gap-4">
                       <CustomerCard customerId={conversationDetail.customerId} />
+                      {conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId && (
+                        <div className="border-t pt-4">
+                          <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Тест: ответ клиента</p>
+                          {showReplyAsCustomer ? (
+                            <div className="flex flex-col gap-2">
+                              <Textarea
+                                placeholder="Сообщение от клиента..."
+                                value={replyAsCustomerText}
+                                onChange={(e) => setReplyAsCustomerText(e.target.value)}
+                                className="min-h-[72px] resize-none text-sm"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    if (replyAsCustomerText.trim()) {
+                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
+                                      setReplyAsCustomerText("");
+                                      setShowReplyAsCustomer(false);
+                                    }
+                                  }
+                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }
+                                }}
+                                autoFocus
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => {
+                                    if (replyAsCustomerText.trim()) {
+                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
+                                      setReplyAsCustomerText("");
+                                      setShowReplyAsCustomer(false);
+                                    }
+                                  }}
+                                  disabled={!replyAsCustomerText.trim() || replyAsCustomerMutation.isPending}
+                                >
+                                  <Send className="mr-1.5 h-3.5 w-3.5" />
+                                  Отправить
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }}>
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Button variant="outline" size="sm" className="w-full" onClick={() => setShowReplyAsCustomer(true)}>
+                              <User className="mr-2 h-3.5 w-3.5" />
+                              Ответить от клиента
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </SheetContent>
                 </Sheet>
@@ -636,11 +690,6 @@ export default function Conversations() {
               onEscalate={(id) => escalateMutation.mutate(id)}
               onSendManual={(content, file) => sendManualMutation.mutate({ content, file })}
               onPhoneClick={handlePhoneClick}
-              onSimulateCustomerReply={
-                conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId
-                  ? (message) => replyAsCustomerMutation.mutate({ conversationId: selectedId, message })
-                  : undefined
-              }
               isLoading={detailLoading}
             />
             {/* Desktop customer panel button */}
@@ -656,8 +705,60 @@ export default function Conversations() {
                     <SheetHeader>
                       <SheetTitle>Карточка клиента</SheetTitle>
                     </SheetHeader>
-                    <div className="mt-4">
+                    <div className="mt-4 flex flex-col gap-4">
                       <CustomerCard customerId={conversationDetail.customerId} />
+                      {conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId && (
+                        <div className="border-t pt-4">
+                          <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Тест: ответ клиента</p>
+                          {showReplyAsCustomer ? (
+                            <div className="flex flex-col gap-2">
+                              <Textarea
+                                placeholder="Сообщение от клиента..."
+                                value={replyAsCustomerText}
+                                onChange={(e) => setReplyAsCustomerText(e.target.value)}
+                                className="min-h-[72px] resize-none text-sm"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    if (replyAsCustomerText.trim()) {
+                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
+                                      setReplyAsCustomerText("");
+                                      setShowReplyAsCustomer(false);
+                                    }
+                                  }
+                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }
+                                }}
+                                autoFocus
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  className="flex-1"
+                                  onClick={() => {
+                                    if (replyAsCustomerText.trim()) {
+                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
+                                      setReplyAsCustomerText("");
+                                      setShowReplyAsCustomer(false);
+                                    }
+                                  }}
+                                  disabled={!replyAsCustomerText.trim() || replyAsCustomerMutation.isPending}
+                                >
+                                  <Send className="mr-1.5 h-3.5 w-3.5" />
+                                  Отправить
+                                </Button>
+                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }}>
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Button variant="outline" size="sm" className="w-full" onClick={() => setShowReplyAsCustomer(true)}>
+                              <User className="mr-2 h-3.5 w-3.5" />
+                              Ответить от клиента
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </SheetContent>
                 </Sheet>
@@ -668,8 +769,72 @@ export default function Conversations() {
         
         {/* Desktop customer card sidebar */}
         {conversationDetail?.customerId && (
-          <div className="hidden shrink-0 border-l p-4 xl:block">
+          <div className="hidden shrink-0 border-l p-4 xl:flex xl:flex-col xl:gap-4 w-72">
             <CustomerCard customerId={conversationDetail.customerId} />
+            {conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId && (
+              <div className="border-t pt-4">
+                <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Тест: ответ клиента</p>
+                {showReplyAsCustomer ? (
+                  <div className="flex flex-col gap-2">
+                    <Textarea
+                      placeholder="Сообщение от клиента..."
+                      value={replyAsCustomerText}
+                      onChange={(e) => setReplyAsCustomerText(e.target.value)}
+                      className="min-h-[72px] resize-none text-sm"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          if (replyAsCustomerText.trim()) {
+                            replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
+                            setReplyAsCustomerText("");
+                            setShowReplyAsCustomer(false);
+                          }
+                        }
+                        if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }
+                      }}
+                      autoFocus
+                      data-testid="textarea-customer-reply"
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          if (replyAsCustomerText.trim()) {
+                            replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
+                            setReplyAsCustomerText("");
+                            setShowReplyAsCustomer(false);
+                          }
+                        }}
+                        disabled={!replyAsCustomerText.trim() || replyAsCustomerMutation.isPending}
+                        data-testid="button-send-customer-reply"
+                      >
+                        <Send className="mr-1.5 h-3.5 w-3.5" />
+                        Отправить
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => setShowReplyAsCustomer(true)}
+                    data-testid="button-reply-as-customer"
+                  >
+                    <User className="mr-2 h-3.5 w-3.5" />
+                    Ответить от клиента
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
