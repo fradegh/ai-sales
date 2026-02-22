@@ -47,6 +47,7 @@ interface ConversationListProps {
   onSelect: (id: string) => void;
   onDelete?: (id: string) => void;
   onCreateTestDialog?: () => void;
+  onNewDialog?: () => void;
   isLoading?: boolean;
 }
 
@@ -69,6 +70,7 @@ export function ConversationList({
   onSelect,
   onDelete,
   onCreateTestDialog,
+  onNewDialog,
   isLoading,
 }: ConversationListProps) {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -91,6 +93,18 @@ export function ConversationList({
             data-testid="input-search-conversations"
           />
         </div>
+        {onNewDialog && (
+          <Button
+            variant="default"
+            size="sm"
+            className="w-full gap-2"
+            onClick={onNewDialog}
+            data-testid="button-new-dialog"
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+            Новый диалог
+          </Button>
+        )}
         {onCreateTestDialog && (
           <Button
             variant="outline"

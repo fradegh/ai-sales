@@ -1171,6 +1171,133 @@ export async function registerRoutes(
     }
   });
 
+  // ============ MAX PERSONAL — OUTBOUND CONVERSATION ============
+
+  app.get("/api/channels/personal-status", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = (req as any).user?.tenantId;
+      if (!tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+
+      // telegram_personal — check via active connected sessions
+      const { telegramClientManager } = await import("./services/telegram-client-manager");
+      const tgAccounts = await storage.getTelegramAccountsByTenant(tenantId);
+      const tgActive = tgAccounts.filter((a) => a.status === "active" && a.isEnabled);
+      let tgConnected = false;
+      for (const acc of tgActive) {
+        if (telegramClientManager.isAccountConnected(tenantId, acc.id)) {
+          tgConnected = true;
+          break;
+        }
+      }
+
+      // max_personal — check authorized accounts
+      const { db: dbInstance } = await import("./db");
+      const { maxPersonalAccounts: mpAccTable } = await import("@shared/schema");
+      const { eq: eqFn, and: andFn } = await import("drizzle-orm");
+      const mpRows = await dbInstance.select().from(mpAccTable).where(
+        andFn(
+          eqFn(mpAccTable.tenantId, tenantId),
+          eqFn(mpAccTable.status, "authorized"),
+        ),
+      );
+
+      res.json({ telegram_personal: tgConnected, max_personal: mpRows.length > 0 });
+    } catch (error: any) {
+      console.error("Error fetching personal channel status:", error);
+      res.status(500).json({ error: "Failed to fetch channel status" });
+    }
+  });
+
+  app.post("/api/max-personal/start-conversation", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const tenantId = (req as any).user?.tenantId;
+      if (!tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
+
+      const { phoneNumber, initialMessage } = req.body;
+      if (!phoneNumber) {
+        return res.status(400).json({ error: "Phone number is required" });
+      }
+
+      const cleanDigits = String(phoneNumber).replace(/\D/g, "");
+      if (cleanDigits.length < 10 || cleanDigits.length > 15) {
+        return res.status(400).json({ error: "Invalid phone number format" });
+      }
+
+      // GREEN-API chatId format: "79991234567@c.us"
+      const chatId = `${cleanDigits}@c.us`;
+
+      // Find authorized MAX Personal account for this tenant
+      const { db: dbInst } = await import("./db");
+      const { maxPersonalAccounts: mpTable } = await import("@shared/schema");
+      const { eq: eqOp, and: andOp } = await import("drizzle-orm");
+      const account = await dbInst.query.maxPersonalAccounts.findFirst({
+        where: andOp(
+          eqOp(mpTable.tenantId, tenantId),
+          eqOp(mpTable.status, "authorized"),
+        ),
+      });
+
+      if (!account) {
+        return res.status(400).json({ error: "No active MAX Personal account connected" });
+      }
+
+      // Upsert customer by chatId
+      let customer = await storage.getCustomerByExternalId(tenantId, "max_personal", chatId);
+      if (!customer) {
+        try {
+          customer = await storage.createCustomer({
+            tenantId,
+            externalId: chatId,
+            name: `WhatsApp +${cleanDigits}`,
+            channel: "max_personal",
+            phone: `+${cleanDigits}`,
+            metadata: {},
+          });
+        } catch (e: any) {
+          customer = await storage.getCustomerByExternalId(tenantId, "max_personal", chatId);
+          if (!customer) throw e;
+        }
+      }
+
+      // Upsert conversation by customerId
+      const allConversations = await storage.getConversationsByTenant(tenantId);
+      let conversation = allConversations.find((c) => c.customerId === customer!.id);
+
+      if (!conversation) {
+        conversation = await storage.createConversation({
+          tenantId,
+          customerId: customer.id,
+          status: "active",
+          mode: "learning",
+        });
+      }
+
+      // Send initial message if provided
+      if (initialMessage && String(initialMessage).trim()) {
+        const trimmed = String(initialMessage).trim();
+        const { maxPersonalAdapter } = await import("./services/max-personal-adapter");
+        const sendResult = await maxPersonalAdapter.sendMessageForTenant(tenantId, chatId, trimmed);
+        if (sendResult.success) {
+          await storage.createMessage({
+            conversationId: conversation.id,
+            role: "assistant",
+            content: trimmed,
+            metadata: { isOutbound: true, externalMessageId: sendResult.externalMessageId ?? null },
+          });
+        }
+      }
+
+      res.json({ success: true, conversationId: conversation.id });
+    } catch (error: any) {
+      console.error("Error starting MAX Personal conversation:", error);
+      res.status(500).json({ error: error.message || "Failed to start conversation" });
+    }
+  });
+
   // ============ TELEGRAM FILE PROXY (Bot API) ============
 
   app.get("/api/telegram/file/:fileId", requireAuth, async (req: Request, res: Response) => {

@@ -9,6 +9,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { User, ArrowLeft } from "lucide-react";
@@ -29,6 +31,14 @@ export default function Conversations() {
   const [testPhone, setTestPhone] = useState("");
   const [testMessage, setTestMessage] = useState("");
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
+
+  // "Новый диалог" modal state
+  const [newDialogOpen, setNewDialogOpen] = useState(false);
+  const [newDialogChannel, setNewDialogChannel] = useState<"telegram_personal" | "max_personal" | "">("");
+  const [newDialogPhone, setNewDialogPhone] = useState("");
+  const [newDialogMessage, setNewDialogMessage] = useState("");
+  const [newDialogPhoneError, setNewDialogPhoneError] = useState("");
+
   const { toast } = useToast();
 
   const handleSelectConversation = async (id: string) => {
@@ -55,6 +65,11 @@ export default function Conversations() {
 
   const { data: channelCounts } = useQuery<{ all: number; telegram?: number; max?: number; whatsapp?: number }>({
     queryKey: ["/api/conversations/channel-counts"],
+  });
+
+  const { data: personalChannelStatus } = useQuery<{ telegram_personal: boolean; max_personal: boolean }>({
+    queryKey: ["/api/channels/personal-status"],
+    staleTime: 60_000,
   });
 
   const filteredConversations = useMemo(() => {
@@ -173,6 +188,101 @@ export default function Conversations() {
     startPhoneConversationMutation.mutate(phoneNumber);
   };
 
+  const startMaxPersonalConversationMutation = useMutation({
+    mutationFn: async (data: { phoneNumber: string; initialMessage?: string }) => {
+      const response = await apiRequest("POST", "/api/max-personal/start-conversation", data);
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "Не удалось начать диалог");
+      return json as { conversationId: string };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      setNewDialogOpen(false);
+      setNewDialogPhone("");
+      setNewDialogMessage("");
+      setNewDialogChannel("");
+      setNewDialogPhoneError("");
+      if (data.conversationId) {
+        setSelectedId(data.conversationId);
+        setMobileShowChat(true);
+        toast({ title: "Диалог открыт" });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Не удалось начать диалог", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const startTelegramPersonalConversationMutation = useMutation({
+    mutationFn: async (data: { phoneNumber: string; initialMessage?: string }) => {
+      const response = await apiRequest("POST", "/api/telegram-personal/start-conversation", data);
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "Не удалось начать диалог");
+      return json as { conversationId: string };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      setNewDialogOpen(false);
+      setNewDialogPhone("");
+      setNewDialogMessage("");
+      setNewDialogChannel("");
+      setNewDialogPhoneError("");
+      if (data.conversationId) {
+        setSelectedId(data.conversationId);
+        setMobileShowChat(true);
+        toast({ title: "Диалог открыт" });
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Не удалось начать диалог", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const validatePhone = (value: string): boolean => {
+    const digits = value.replace(/\D/g, "");
+    if (digits.length < 10 || digits.length > 15) {
+      setNewDialogPhoneError("Введите номер телефона в формате +79991234567");
+      return false;
+    }
+    setNewDialogPhoneError("");
+    return true;
+  };
+
+  const handleNewDialogSubmit = () => {
+    if (!validatePhone(newDialogPhone)) return;
+    const payload = {
+      phoneNumber: newDialogPhone.trim(),
+      initialMessage: newDialogMessage.trim() || undefined,
+    };
+    if (newDialogChannel === "max_personal") {
+      startMaxPersonalConversationMutation.mutate(payload);
+    } else if (newDialogChannel === "telegram_personal") {
+      startTelegramPersonalConversationMutation.mutate(payload);
+    }
+  };
+
+  const newDialogPending =
+    startMaxPersonalConversationMutation.isPending ||
+    startTelegramPersonalConversationMutation.isPending;
+
+  const connectedPersonalChannels = [
+    personalChannelStatus?.telegram_personal && "telegram_personal",
+    personalChannelStatus?.max_personal && "max_personal",
+  ].filter(Boolean) as Array<"telegram_personal" | "max_personal">;
+
+  const handleNewDialogOpen = () => {
+    setNewDialogPhone("");
+    setNewDialogMessage("");
+    setNewDialogPhoneError("");
+    // Pre-select channel if only one is connected
+    if (connectedPersonalChannels.length === 1) {
+      setNewDialogChannel(connectedPersonalChannels[0]);
+    } else {
+      setNewDialogChannel("");
+    }
+    setNewDialogOpen(true);
+  };
+
   const deleteConversationMutation = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiRequest("DELETE", `/api/conversations/${id}`);
@@ -245,6 +355,7 @@ export default function Conversations() {
           selectedId={selectedId || undefined}
           onSelect={handleSelectConversation}
           onDelete={(id) => deleteConversationMutation.mutate(id)}
+          onNewDialog={handleNewDialogOpen}
           onCreateTestDialog={() => setTestDialogOpen(true)}
           isLoading={conversationsLoading}
         />
@@ -296,6 +407,87 @@ export default function Conversations() {
         </DialogContent>
       </Dialog>
       
+      {/* Новый диалог */}
+      <Dialog open={newDialogOpen} onOpenChange={(open) => {
+        if (!newDialogPending) setNewDialogOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Новый диалог</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            {connectedPersonalChannels.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Нет подключённых каналов. Подключите Telegram Personal или MAX Personal в настройках.
+              </p>
+            ) : (
+              <>
+                {connectedPersonalChannels.length > 1 && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="new-dialog-channel">Канал</Label>
+                    <Select
+                      value={newDialogChannel}
+                      onValueChange={(v) => setNewDialogChannel(v as "telegram_personal" | "max_personal")}
+                    >
+                      <SelectTrigger id="new-dialog-channel">
+                        <SelectValue placeholder="Выберите канал" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {connectedPersonalChannels.includes("telegram_personal") && (
+                          <SelectItem value="telegram_personal">Telegram Personal</SelectItem>
+                        )}
+                        {connectedPersonalChannels.includes("max_personal") && (
+                          <SelectItem value="max_personal">MAX Personal</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-dialog-phone">Номер телефона</Label>
+                  <Input
+                    id="new-dialog-phone"
+                    placeholder="+79991234567"
+                    value={newDialogPhone}
+                    onChange={(e) => {
+                      setNewDialogPhone(e.target.value);
+                      if (newDialogPhoneError) setNewDialogPhoneError("");
+                    }}
+                    onBlur={() => {
+                      if (newDialogPhone) validatePhone(newDialogPhone);
+                    }}
+                  />
+                  {newDialogPhoneError && (
+                    <p className="text-xs text-destructive">{newDialogPhoneError}</p>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="new-dialog-message">Первое сообщение <span className="text-muted-foreground">(необязательно)</span></Label>
+                  <Textarea
+                    id="new-dialog-message"
+                    placeholder="Введите сообщение..."
+                    rows={3}
+                    value={newDialogMessage}
+                    onChange={(e) => setNewDialogMessage(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewDialogOpen(false)} disabled={newDialogPending}>
+              Отмена
+            </Button>
+            <Button
+              onClick={handleNewDialogSubmit}
+              disabled={newDialogPending || connectedPersonalChannels.length === 0 || !newDialogChannel}
+            >
+              {newDialogPending ? "Создание..." : "Начать диалог"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Chat Area - hidden on mobile when list is shown */}
       <div className={`flex flex-1 min-w-0 overflow-hidden ${mobileShowChat ? 'flex' : 'hidden md:flex'}`}>
         <div className="flex-1 overflow-hidden relative flex flex-col">
