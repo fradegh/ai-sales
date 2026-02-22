@@ -288,7 +288,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       console.log(`[VehicleLookupWorker] Auto-started price lookup (VW Group MODEL_ONLY, model: ${gearbox.model}).`);
     } else if (lookupConfidence >= 0.85 && gearbox.oemStatus === "FOUND" && gearbox.oem) {
       const { enqueuePriceLookup } = await import("../services/price-lookup-queue");
-      await enqueuePriceLookup({ tenantId, conversationId, oem: gearbox.oem });
+      await enqueuePriceLookup({ tenantId, conversationId, oem: gearbox.oem, oemModelHint: gearbox.model ?? null });
       console.log("[VehicleLookupWorker] Auto-started price lookup (high confidence OEM).");
     } else if (gearbox.oemStatus !== "FOUND" || !gearbox.oem) {
       await tryFallbackPriceLookup({

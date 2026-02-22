@@ -4,7 +4,7 @@ import { PriceLookupJobData, SearchFallback } from "../services/price-lookup-que
 import { getRedisConnectionConfig } from "../services/message-queue";
 import { storage } from "../storage";
 import type { GearboxType } from "../services/price-sources/types";
-import { identifyTransmissionByOem } from "../services/transmission-identifier";
+import { identifyTransmissionByOem, TransmissionIdentification } from "../services/transmission-identifier";
 import { searchUsedTransmissionPrice } from "../services/price-searcher";
 import { renderTemplate, DEFAULT_TEMPLATES } from "../services/template-renderer";
 import type { PriceSnapshot, TenantAgentSettings } from "@shared/schema";
@@ -370,7 +370,8 @@ async function estimatePriceFromAI(
 async function lookupPricesByOem(
   tenantId: string,
   oem: string,
-  conversationId: string
+  conversationId: string,
+  oemModelHint?: string | null
 ): Promise<void> {
   // Load agent settings once — needed for mileage tier thresholds
   const agentSettings = await storage.getTenantAgentSettings(tenantId);
@@ -385,14 +386,27 @@ async function lookupPricesByOem(
     return;
   }
 
-  // 2. Identify transmission model from OEM
-  console.log(`[PriceLookupWorker] Identifying transmission for OEM "${oem}"`);
-  const identification = await identifyTransmissionByOem(oem);
-  console.log(
-    `[PriceLookupWorker] Identification: model=${identification.modelName}, ` +
-      `mfr=${identification.manufacturer}, origin=${identification.origin}, ` +
-      `confidence=${identification.confidence}`
-  );
+  // 2. Identify transmission model from OEM.
+  // If the vehicle lookup already resolved the model name, skip the GPT call entirely.
+  let identification: TransmissionIdentification;
+  if (oemModelHint) {
+    identification = {
+      modelName: oemModelHint,
+      manufacturer: null,
+      origin: "unknown",
+      confidence: "high",
+      notes: "model name supplied by vehicle lookup — GPT identification skipped",
+    };
+    console.log(`[PriceLookupWorker] Using oemModelHint "${oemModelHint}" for OEM "${oem}" — skipping GPT identification`);
+  } else {
+    console.log(`[PriceLookupWorker] Identifying transmission for OEM "${oem}"`);
+    identification = await identifyTransmissionByOem(oem);
+    console.log(
+      `[PriceLookupWorker] Identification: model=${identification.modelName}, ` +
+        `mfr=${identification.manufacturer}, origin=${identification.origin}, ` +
+        `confidence=${identification.confidence}`
+    );
+  }
 
   // 3. Search real prices via OpenAI Web Search
   console.log(`[PriceLookupWorker] Searching prices for OEM "${oem}"`);
@@ -413,8 +427,9 @@ async function lookupPricesByOem(
       if (aiEstimate) {
         const { priceMin, priceMax } = aiEstimate;
         const avgPrice = Math.round((priceMin + priceMax) / 2);
+        const displayName = identification.modelName ?? oem;
         const suggestedReply =
-          `Контрактные КПП ${oem} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+          `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
           `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
         const aiSnapshot = await storage.createPriceSnapshot({
           tenantId: null,
@@ -711,12 +726,12 @@ async function lookupPricesByFallback(
 // ─── Main processor ───────────────────────────────────────────────────────────
 
 async function processPriceLookup(job: Job<PriceLookupJobData>): Promise<void> {
-  const { tenantId, conversationId, oem, searchFallback, isModelOnly } = job.data;
+  const { tenantId, conversationId, oem, oemModelHint, searchFallback, isModelOnly } = job.data;
 
   if (oem) {
     // New flow: global cache + AI identification + OpenAI web search
     console.log(`[PriceLookupWorker] OEM mode for "${oem}", conversation ${conversationId}`);
-    await lookupPricesByOem(tenantId, oem, conversationId);
+    await lookupPricesByOem(tenantId, oem, conversationId, oemModelHint ?? null);
   } else if (searchFallback) {
     // Fallback flow: no OEM, use make/model/gearboxType
     const mode = isModelOnly ? "MODEL_ONLY" : "FALLBACK";

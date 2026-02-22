@@ -13,6 +13,7 @@ export interface PriceLookupJobData {
   tenantId: string;
   conversationId: string;
   oem: string | null;
+  oemModelHint?: string | null;
   searchFallback?: SearchFallback;
   isModelOnly?: boolean;
 }
