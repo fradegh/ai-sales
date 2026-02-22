@@ -375,12 +375,12 @@ async function estimatePriceFromAI(
 function isValidTransmissionModel(model: string | null): boolean {
   if (!model) return false;
   if (model.length > 12) return false;
-  // Reject internal catalog codes that contain 4+ consecutive digits
+  // Reject internal catalog codes with 4+ consecutive digits
   // e.g. M3MHD987579 contains "987579" — 6 consecutive digits
   if (/\d{4,}/.test(model)) return false;
-  // Valid automotive naming patterns: U660E, F4A42, RE4R03A, JF011E, DQ250, QCE, 09G, AW55-51SN
-  const validPattern = /^[A-Z]{1,4}[\d]{1,3}[A-Z0-9]{0,5}(-[A-Z0-9]{1,5})?$/;
-  return validPattern.test(model);
+  // Accept letter-only (QCE), digit-first (09G), hyphenated (AW55-51SN),
+  // parenthesised (QCE(6A)), and standard alphanumeric codes (F4A42, U660E)
+  return /^[A-Z0-9][A-Z0-9\-()]{1,11}$/.test(model);
 }
 
 // ─── OEM lookup flow (new global cache + AI search) ──────────────────────────
