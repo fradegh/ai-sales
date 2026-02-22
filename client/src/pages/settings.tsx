@@ -3338,28 +3338,32 @@ function CompanyAgentCard({ autoPartsEnabled = false }: CompanyAgentCardProps) {
                 data-testid="input-company-warranty-months"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="company-warranty-km">Гарантия (км)</Label>
-              <Input
-                id="company-warranty-km"
-                type="number"
-                value={warrantyKm}
-                onChange={(e) => setWarrantyKm(e.target.value)}
-                placeholder="30000"
-                data-testid="input-company-warranty-km"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="company-install-days">Дней на установку</Label>
-              <Input
-                id="company-install-days"
-                type="number"
-                value={installDays}
-                onChange={(e) => setInstallDays(e.target.value)}
-                placeholder="14"
-                data-testid="input-company-install-days"
-              />
-            </div>
+            {autoPartsEnabled && (
+              <div className="space-y-2">
+                <Label htmlFor="company-warranty-km">Гарантия (км)</Label>
+                <Input
+                  id="company-warranty-km"
+                  type="number"
+                  value={warrantyKm}
+                  onChange={(e) => setWarrantyKm(e.target.value)}
+                  placeholder="30000"
+                  data-testid="input-company-warranty-km"
+                />
+              </div>
+            )}
+            {autoPartsEnabled && (
+              <div className="space-y-2">
+                <Label htmlFor="company-install-days">Дней на установку</Label>
+                <Input
+                  id="company-install-days"
+                  type="number"
+                  value={installDays}
+                  onChange={(e) => setInstallDays(e.target.value)}
+                  placeholder="14"
+                  data-testid="input-company-install-days"
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="company-qr-discount">Скидка при QR/СБП (%)</Label>
               <Input
