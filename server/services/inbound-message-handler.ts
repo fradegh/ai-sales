@@ -49,6 +49,43 @@ export type VehicleIdDetection =
   | { idType: "VIN"; rawValue: string; normalizedValue: string; isIncompleteVin: true }
   | { idType: "FRAME"; rawValue: string; normalizedValue: string };
 
+/**
+ * Detect a gearbox OEM marking from plain text when no VIN/FRAME was found.
+ * Returns the first plausible marking or null.
+ *
+ * Patterns covered:
+ *   Japanese:  A245E, U150E, JF010E, RE4F04A, U660E
+ *   European:  01M, 09G, DQ250, 0AM, NAG1, 6HP19
+ *   Korean:    A6MF1, M11, 6T40, A8TR1
+ *   With suffix: A245E-02A, RE4F04A-B41
+ */
+export function detectGearboxMarkingFromText(text: string): string | null {
+  if (!text || text.trim().length < 2) return null;
+
+  const upper = text.toUpperCase().trim();
+
+  // Skip if already detected as VIN or frame by detectVehicleIdFromText
+  if (/^[A-HJ-NPR-Z0-9]{17}$/.test(upper)) return null;
+
+  // Skip OEM part numbers (digits-digits pattern like 24600-42L00)
+  if (/^\d{4,6}-\d{4,6}[A-Z0-9]*$/.test(upper)) return null;
+
+  const oemPattern = /\b([A-Z0-9]{2,4}[A-Z][0-9]{1,4}[A-Z0-9]{0,4}(?:-[A-Z0-9]{2,5})?)\b/g;
+  const matches = upper.match(oemPattern);
+  if (!matches) return null;
+
+  const filtered = matches.filter(
+    (m) =>
+      m.length >= 2 &&
+      m.length <= 14 &&
+      m.length !== 17 && // not a VIN
+      !/^\d+$/.test(m) && // not all digits
+      !/^[A-Z]{1,2}\d{6,}$/.test(m), // not a frame number pattern
+  );
+
+  return filtered.length > 0 ? filtered[0] : null;
+}
+
 export function detectVehicleIdFromText(text: string): VehicleIdDetection | null {
   if (!text || typeof text !== "string") return null;
   const trimmed = text.trim();
@@ -258,7 +295,13 @@ export async function triggerAiSuggestion(conversationId: string): Promise<void>
 
     const conversationHistory = conversation.messages.slice(-6).map((m) => ({
       role: (m.role === "customer" ? "user" : "assistant") as "user" | "assistant",
-      content: m.content,
+      content:
+        m.content +
+        (m.role === "customer" &&
+        Array.isArray(m.attachments) &&
+        (m.attachments as unknown[]).length > 0
+          ? "\n[Client attached a photo]"
+          : ""),
     }));
 
     const { generateWithDecisionEngine } = await import("./decision-engine");
@@ -411,6 +454,24 @@ export async function processIncomingMessageFull(
           realtimeService.broadcastNewSuggestion(tenant.id, result.conversationId, suggestion.id);
           console.log(`[InboundHandler] Created gearbox_tag_request suggestion for vehicle lookup case ${row.id}`);
         }
+      }
+    }
+
+    // If no VIN/FRAME detected, try to detect a gearbox OEM marking (e.g. A245E, K9K, 01M)
+    // and enqueue a direct price lookup — skip Podzamenu VIN/FRAME lookup entirely.
+    if (!vehicleDet && autoPartsEnabled) {
+      const detectedMarking = detectGearboxMarkingFromText(text);
+      if (detectedMarking) {
+        console.log(
+          `[InboundHandler] Gearbox marking detected (${detectedMarking}) — enqueueing direct price lookup for ${result.conversationId}`,
+        );
+        const { enqueuePriceLookup } = await import("./price-lookup-queue");
+        await enqueuePriceLookup({
+          tenantId,
+          conversationId: result.conversationId,
+          oem: detectedMarking,
+        });
+        return; // price-lookup worker handles the reply
       }
     }
 
