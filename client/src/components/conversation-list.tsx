@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -104,7 +103,7 @@ export function ConversationList({
           </Button>
         )}
       </div>
-      <ScrollArea className="flex-1 w-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
         {isLoading ? (
           <div className="space-y-2 p-3">
             {[1, 2, 3, 4, 5].map((i) => (
@@ -198,7 +197,7 @@ export function ConversationList({
             ))}
           </div>
         )}
-      </ScrollArea>
+      </div>
 
       <AlertDialog open={!!deleteTargetId} onOpenChange={(open) => !open && setDeleteTargetId(null)}>
         <AlertDialogContent>
