@@ -55,13 +55,14 @@ declare module "http" {
 
 app.use(
   express.json({
+    limit: "10mb", // raised from default 100kb to support base64-encoded image uploads
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "10mb" }));
 
 // Phase 0: Request context middleware (adds requestId, sets audit context)
 app.use(requestContextMiddleware);
