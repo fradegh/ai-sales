@@ -1,5 +1,16 @@
 import { openai } from "./decision-engine";
 
+export interface VehicleContext {
+  make?: string | null;
+  model?: string | null;
+  year?: string | null;
+  engine?: string | null;
+  body?: string | null;
+  driveType?: string | null;
+  gearboxModelHint?: string | null;
+  factoryCode?: string | null;
+}
+
 export interface TransmissionIdentification {
   modelName: string | null;       // e.g. "JATCO JF011E"
   manufacturer: string | null;    // e.g. "JATCO", "Aisin", "ZF", "Getrag"
@@ -24,17 +35,30 @@ const FALLBACK_RESULT: TransmissionIdentification = {
 /**
  * Identifies a transmission model from an OEM/part number using GPT-4o-mini.
  * No web search needed — the model has knowledge of OEM codes.
+ * Optionally accepts vehicle context to improve identification accuracy.
  *
  * Returns all nulls with confidence: 'low' on parse failure.
  */
 export async function identifyTransmissionByOem(
-  oem: string
+  oem: string,
+  context?: VehicleContext
 ): Promise<TransmissionIdentification> {
   try {
+    const contextLines: string[] = [];
+    if (context?.make || context?.model) {
+      contextLines.push(`Vehicle: ${[context.make, context.model].filter(Boolean).join(" ")}`);
+    }
+    if (context?.year) contextLines.push(`Year: ${context.year}`);
+    if (context?.engine) contextLines.push(`Engine: ${context.engine}`);
+    if (context?.body) contextLines.push(`Chassis: ${context.body}`);
+    if (context?.driveType) contextLines.push(`Drive type: ${context.driveType}`);
+    if (context?.gearboxModelHint) contextLines.push(`Gearbox model hint from catalog: ${context.gearboxModelHint}`);
+    if (context?.factoryCode) contextLines.push(`Factory code: ${context.factoryCode}`);
+
     const userPrompt =
-      `OEM code: ${oem}. ` +
-      `Identify: modelName (e.g. "JATCO JF011E"), manufacturer (e.g. "JATCO", "Aisin", "ZF"), ` +
-      `origin (japan/europe/korea/usa/unknown), confidence (high/medium/low), notes (brief explanation).`;
+      `OEM code: ${oem}.\n` +
+      (contextLines.length > 0 ? contextLines.join("\n") + "\n" : "") +
+      `Identify: modelName, manufacturer, origin, confidence, notes.`;
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",

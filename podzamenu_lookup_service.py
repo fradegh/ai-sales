@@ -296,6 +296,10 @@ META_LABELS = {
     "make": "make",
     "model": "model",
     "year": "year",
+    "привод": "driveType",
+    "тип привода": "driveType",
+    "drive": "driveType",
+    "drivetrain": "driveType",
 }
 
 
@@ -591,6 +595,8 @@ async def _extract_vehicle_info_js(page) -> dict:
                     h === 'марка' || h === 'бренд');
                 const transIdx = headers.findIndex(h =>
                     h === 'transmission' || h === 'трансмиссия');
+                const driveIdx = headers.findIndex(h =>
+                    h === 'привод' || h.includes('тип привода') || h === 'drive' || h === 'drivetrain');
 
                 const hasAnyCol = kppIdx >= 0 || gearboxModelIdx >= 0
                     || gearboxFactoryIdx >= 0 || aggregatesIdx >= 0
@@ -622,6 +628,8 @@ async def _extract_vehicle_info_js(page) -> dict:
                             meta.make = g(makeIdx).substring(0, 200);
                         if (!meta.transmission && g(transIdx))
                             meta.transmission = g(transIdx).substring(0, 200);
+                        if (!meta.driveType && g(driveIdx))
+                            meta.driveType = g(driveIdx).substring(0, 200);
                         break;
                     }
                 }
@@ -670,6 +678,9 @@ async def _extract_vehicle_info_js(page) -> dict:
                         meta.body = val.substring(0, 200);
                     if ((key === 'transmission' || key === 'трансмиссия')
                         && !meta.transmission) meta.transmission = val.substring(0, 200);
+                    if ((key === 'привод' || key.includes('тип привода')
+                        || key === 'drive' || key === 'drivetrain')
+                        && !meta.driveType) meta.driveType = val.substring(0, 200);
                 }
             }
 

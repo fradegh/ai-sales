@@ -144,34 +144,27 @@ emailVerifiedAt: timestamp("email_verified_at"),
 
 ### API Endpoints: `/api/resource` with `kebab-case` slugs
 
-```
-GET    /api/tenant
-PATCH  /api/tenant
-GET    /api/customers
-GET    /api/customers/:id
-PATCH  /api/customers/:id
-GET    /api/customers/:id/notes
-POST   /api/customers/:id/notes
-GET    /api/customers/:id/memory
-GET    /api/conversations
-GET    /api/conversations/:id
-PATCH  /api/conversations/:id
-POST   /api/conversations/:id/messages
-POST   /api/conversations/:id/generate-suggestion
-POST   /api/suggestions/:id/approve
-GET    /api/settings/decision
-PATCH  /api/settings/human-delay
-GET    /api/admin/feature-flags
-POST   /api/admin/rag/regenerate-embeddings
-GET    /api/onboarding/state
-POST   /api/onboarding/complete-step
-GET    /api/analytics/csat
-GET    /api/analytics/lost-deals
-GET    /api/channels/status
-POST   /api/channels/:channel/toggle
-```
-
 Pattern: `/api/{resource}` or `/api/{resource}/:id/{sub-resource}`. Multi-word slugs use `kebab-case` (e.g., `feature-flags`, `generate-suggestion`, `human-delay`).
+
+Routes are split across domain modules under `server/routes/`:
+
+| Module | File | Prefix |
+|--------|------|--------|
+| Auth | `auth.ts`, `auth-api.ts` | `/auth/`, `/api/auth/` |
+| Customers | `customer.routes.ts` | `/api/customers/` |
+| Conversations | `conversation.routes.ts` | `/api/conversations/`, `/api/suggestions/` |
+| Products | `product.routes.ts` | `/api/products/` |
+| Knowledge Base | `knowledge-base.routes.ts` | `/api/knowledge-docs/` |
+| Analytics | `analytics.routes.ts` | `/api/analytics/`, `/api/dashboard/`, `/api/escalations/`, `/api/lost-deals/` |
+| Onboarding | `onboarding.routes.ts` | `/api/onboarding/` |
+| Billing | `billing.routes.ts` | `/api/billing/` |
+| Vehicle/Price | `vehicle-lookup.routes.ts` | `/api/conversations/:id/vehicle-lookup-case`, `/api/price-settings/`, `/api/conversations/:id/price-lookup`, `/api/conversations/:id/price-history` |
+| Templates/Payment/AgentSettings | `tenant-config.routes.ts` | `/api/templates/`, `/api/payment-methods/`, `/api/agent-settings/` |
+| Admin | `admin.ts` | `/api/admin/` |
+| Feature Flags | `phase0.ts` | `/api/admin/feature-flags/`, `/api/feature-flags/`, `/api/admin/audit-events/` |
+| Health | `health.ts` | `/health`, `/ready`, `/metrics` |
+
+Central route registration + channels/webhooks remain in `server/routes.ts` (1,697 lines).
 
 ### React Components: `PascalCase`
 
@@ -1368,6 +1361,32 @@ export { Button, buttonVariants };
 
 ---
 
+## CSRF Protection
+
+### Double-Submit Cookie Pattern (csrf-csrf v4)
+
+All state-mutating API calls (POST/PUT/PATCH/DELETE) require a valid CSRF token:
+
+```typescript
+// Server: GET /api/csrf-token → generates token, sets httpOnly cookie
+app.get("/api/csrf-token", (req, res) => {
+  const token = generateCsrfToken(req, res);
+  res.json({ token });
+});
+app.use(csrfProtection); // validates X-Csrf-Token header on mutating requests
+```
+
+```typescript
+// Client: client/src/lib/queryClient.ts
+// Lazy-fetches token on first mutating request, caches in memory
+// Sends as X-Csrf-Token header
+// Invalidates on 403 INVALID_CSRF_TOKEN response
+```
+
+**Exempt paths**: `/webhooks/*`, `/api/max-personal/incoming`, `GET/HEAD/OPTIONS` methods.
+
+---
+
 ## Middleware Patterns
 
 ### Auth Middleware Chain
@@ -1400,6 +1419,79 @@ Available middleware:
 - `requireActiveSubscription` — billing check
 - `requireActiveTenant` — fraud protection check
 - Rate limiters: `aiRateLimiter`, `webhookRateLimiter`, `conversationRateLimiter`
+
+---
+
+## Channel Adapter Pattern
+
+### Interface: `ChannelAdapter`
+
+All messaging channels implement the same interface (defined in `server/services/channel-adapter.ts`):
+
+```typescript
+interface ChannelAdapter {
+  readonly name: ChannelType;
+  sendMessage(externalConversationId: string, text: string, options?): Promise<ChannelSendResult>;
+  parseIncomingMessage(rawPayload: unknown): ParsedIncomingMessage | null;
+  sendTypingStart?(externalConversationId: string): Promise<void>;
+  sendTypingStop?(externalConversationId: string): Promise<void>;
+  verifyWebhook?(headers, body, secret?): WebhookVerifyResult;
+}
+```
+
+Registered channels (in `channelRegistry`): `mock`, `telegram`, `whatsapp`, `max`, `whatsapp_personal`, `max_personal`. Feature flag gating per channel type.
+
+### Inbound Message Pipeline
+
+**ALWAYS use `processIncomingMessageFull()` for ALL inbound messages.** Never create alternative pipelines.
+
+```
+Channel event → processIncomingMessageFull(tenantId, parsed)
+  1. handleIncomingMessage(): find/create customer+conversation, dedup, save, WS broadcast
+  2. If AUTO_PARTS_ENABLED: detectVehicleIdFromText() → VIN/FRAME → enqueue lookup
+  3. triggerAiSuggestion(): check no pending → Decision Engine → save → WS broadcast
+```
+
+### GREEN-API (MAX Personal)
+
+MAX Personal accounts use the [GREEN-API](https://green-api.com) platform (not Playwright). Each account has `idInstance` + `apiTokenInstance` from the GREEN-API dashboard. Multiple accounts per tenant (stored in `max_personal_accounts` table). The `max-green-api-adapter.ts` handles sending; the `max-personal-webhook.ts` route handles incoming events.
+
+---
+
+## Feature Flags Pattern
+
+### Checking Flags
+
+```typescript
+// Async (routes/services) — always fresh for tenant-specific
+const enabled = await featureFlagService.isEnabled("FLAG_NAME");
+const tenantEnabled = await featureFlagService.isEnabled("FLAG_NAME", tenantId);
+
+// Sync helper (after initialization)
+const enabled = isFeatureEnabled("FLAG_NAME");
+```
+
+### Storage
+
+Flags are stored in `feature_flags.json` (defaults, keyed as `global:<FLAG_NAME>`), seeded to `feature_flags` DB table at startup, and loaded into memory. Partial unique indexes allow per-tenant overrides. See migration `0013_feature_flags_composite_unique.sql`.
+
+### Known Flags
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `AI_SUGGESTIONS_ENABLED` | `true` | Gates `triggerAiSuggestion` |
+| `DECISION_ENGINE_ENABLED` | `false` | Advanced decision engine |
+| `AI_AUTOSEND_ENABLED` | `false` | Auto-send without approval |
+| `HUMAN_DELAY_ENABLED` | `false` | Human-like typing delay |
+| `RAG_ENABLED` | `true` | RAG context retrieval |
+| `FEW_SHOT_LEARNING` | `true` | Few-shot examples in prompts |
+| `TELEGRAM_PERSONAL_CHANNEL_ENABLED` | `true` | MTProto channel |
+| `WHATSAPP_PERSONAL_CHANNEL_ENABLED` | `true` | Baileys channel |
+| `MAX_PERSONAL_CHANNEL_ENABLED` | `true` | GREEN-API channel |
+| `TELEGRAM_CHANNEL_ENABLED` | `false` | Bot API (inactive) |
+| `WHATSAPP_CHANNEL_ENABLED` | `false` | Business API (inactive) |
+| `MAX_CHANNEL_ENABLED` | `false` | Bot API (inactive) |
+| `AUTO_PARTS_ENABLED` | *(absent = false)* | VIN/FRAME auto-detection in messages |
 
 ---
 

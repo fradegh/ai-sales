@@ -10,9 +10,9 @@ You are the backend developer for AI Sales Operator.
 
 1. Read `server/` directory structure
 2. Read `shared/schema.ts` for types, Zod insert schemas, constants (`VALID_INTENTS`, `CHANNEL_TYPES`, `TENANT_STATUSES`, etc.)
-3. Check existing routes in `server/routes.ts` and sub-routers in `server/routes/`
+3. Check domain sub-routers in `server/routes/` (customer, conversation, product, knowledge-base, analytics, onboarding, billing, vehicle-lookup, tenant-config, auth, admin, phase0, health, webhooks)
 4. Check existing services in `server/services/`
-5. Check `server/storage.ts` for the `IStorage` interface (80+ methods) before adding new methods
+5. Check `server/storage.ts` for the `IStorage` interface (~100 methods) before adding new methods
 6. Read `PROJECT_MAP.md` for context
 
 ## Stack
@@ -38,8 +38,14 @@ You are the backend developer for AI Sales Operator.
 ### Routes
 
 - Registered in `server/routes.ts` via `registerRoutes(httpServer, app)`
-- Pattern: `app.METHOD("/api/resource", ...middleware, async (req, res) => { try/catch })`
-- Sub-routers mounted via `app.use("/auth", authRouter)`, `app.use("/api/admin", adminRouter)`
+- Domain logic lives in sub-routers under `server/routes/`; channel/webhook routes remain in `server/routes.ts`
+- Pattern: `router.METHOD("/resource", ...middleware, async (req, res) => { try/catch })`
+- Sub-routers: `app.use("/auth", authRouter)`, `app.use("/api/admin", adminRouter)`, `app.use("/api/customers", customerRouter)`, etc.
+
+### CSRF Protection
+
+- All state-mutating requests (POST/PUT/PATCH/DELETE) require `X-Csrf-Token` header — handled automatically by `apiRequest()` on the frontend
+- Exempt: `/webhooks/*`, `/api/max-personal/incoming`, safe HTTP methods
 
 ### Validation
 
@@ -56,12 +62,13 @@ You are the backend developer for AI Sales Operator.
 
 - Via Drizzle ORM — access **ONLY** through the `storage` layer (`import { storage } from "./storage"`)
 - **NEVER** call `db` directly from routes
-- `IStorage` has 80+ methods
+- `IStorage` has ~100 methods
 - New DB operations → add to `IStorage` interface + implement in `DatabaseStorage`
 
 ### Migrations
 
-- Every schema change → edit `shared/schema.ts` → run `npx drizzle-kit generate` → `npx drizzle-kit push`
+- Every schema change → edit `shared/schema.ts` → run `npx drizzle-kit generate` → review generated SQL → `npm run db:migrate` (production) or `npm run db:push` (dev sync only)
+- **NEVER** use `drizzle-kit push --force` — it silently drops columns without review
 
 ### Middleware & Auth
 
@@ -104,10 +111,20 @@ You are the backend developer for AI Sales Operator.
 | File | Description |
 |------|-------------|
 | `server/index.ts` | Express entry: middleware, routes, WebSocket, session restore, Python spawn |
-| `server/routes.ts` | Central route registration — 100+ endpoints |
+| `server/routes.ts` | Central route registration + channel/webhook routes (1,697 lines) |
+| `server/routes/customer.routes.ts` | `/api/customers/*` |
+| `server/routes/conversation.routes.ts` | `/api/conversations/*`, `/api/suggestions/*` |
+| `server/routes/product.routes.ts` | `/api/products/*` |
+| `server/routes/knowledge-base.routes.ts` | `/api/knowledge-docs/*` |
+| `server/routes/analytics.routes.ts` | `/api/analytics/*`, `/api/dashboard/*`, `/api/escalations/*`, `/api/lost-deals/*` |
+| `server/routes/onboarding.routes.ts` | `/api/onboarding/*` |
+| `server/routes/billing.routes.ts` | `/api/billing/*` |
+| `server/routes/vehicle-lookup.routes.ts` | `/api/conversations/:id/vehicle-lookup-case`, `/api/price-settings/*`, `/api/price-history` |
+| `server/routes/tenant-config.routes.ts` | `/api/templates/*`, `/api/payment-methods/*`, `/api/agent-settings/*` |
+| `server/routes/max-personal-webhook.ts` | MAX Personal (GREEN-API) incoming webhook |
 | `server/db.ts` | PostgreSQL pool + Drizzle instance |
 | `server/config.ts` | Zod-based env validation (`validateConfig()`, `getConfig()`) |
-| `server/storage.ts` | `IStorage` interface (80+ methods) + `DatabaseStorage` export |
+| `server/storage.ts` | `IStorage` interface (~100 methods) + `DatabaseStorage` export |
 | `server/database-storage.ts` | Full PostgreSQL `IStorage` implementation — all CRUD for every table |
 | `server/session.ts` | Express session with connect-pg-simple (7-day TTL) |
 | `server/routes/auth.ts` | Auth router: signup, login, logout, invite, email verify, password reset |
@@ -127,7 +144,7 @@ You are the backend developer for AI Sales Operator.
 | `server/middleware/rate-limiter.ts` | In-memory rate limiting |
 | `server/workers/vehicle-lookup.worker.ts` | VIN/FRAME → Python → cache → suggestion → price trigger |
 | `server/workers/price-lookup.worker.ts` | Price cascade: internal → Avito → Drom → Web → mock |
-| `shared/schema.ts` | 45 Drizzle tables, all enums/constants, Zod insert schemas, exported types |
+| `shared/schema.ts` | 48 Drizzle tables, all enums/constants, Zod insert schemas, exported types (~1564 lines) |
 
 ## Common Patterns
 

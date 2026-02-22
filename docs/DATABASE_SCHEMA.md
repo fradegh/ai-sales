@@ -53,6 +53,7 @@
   - [message_templates](#message_templates)
   - [payment_methods](#payment_methods)
   - [tenant_agent_settings](#tenant_agent_settings)
+  - [max_personal_accounts](#max_personal_accounts)
 - [Relationships](#relationships)
 - [Indexes](#indexes)
 - [Migrations History](#migrations-history)
@@ -66,12 +67,13 @@
 |----------|-------|
 | Database | PostgreSQL |
 | ORM | Drizzle ORM (`drizzle-orm` + `node-postgres`) |
-| Schema file | `shared/schema.ts` |
+| Schema file | `shared/schema.ts` (~1564 lines) |
 | Additional models | `shared/models/auth.ts`, `shared/models/chat.ts` (legacy) |
 | Migrations directory | `./migrations` |
 | Config file | `drizzle.config.ts` |
 | Connection | `DATABASE_URL` environment variable |
 | Primary key strategy | UUID (`gen_random_uuid()`) for all tables |
+| Total tables | **48** (defined in `shared/schema.ts`) |
 
 ---
 
@@ -80,6 +82,8 @@
 ### tenants
 
 Multi-tenant root table. Each business is a tenant.
+
+> **Price settings** (`GET/PUT /api/price-settings`) are NOT stored in a separate table. They are stored inside `tenants.templates` JSONB under the key `priceSettings`: `{ marginPct, roundTo, priceNote, showMarketPrice }`. Default: `{ marginPct: -25, roundTo: 100, priceNote: "", showMarketPrice: false }`.
 
 | Column | Type | Nullable | Default | Constraints | Description |
 |--------|------|----------|---------|-------------|-------------|
@@ -611,7 +615,13 @@ Feature flags (global or per-tenant).
 | created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Creation timestamp |
 | updated_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Last update |
 
-Known flag names: `AI_SUGGESTIONS_ENABLED`, `DECISION_ENGINE_ENABLED`, `AI_AUTOSEND_ENABLED`, `HUMAN_DELAY_ENABLED`, `RAG_ENABLED`, `FEW_SHOT_LEARNING`, `TELEGRAM_CHANNEL_ENABLED`, `TELEGRAM_PERSONAL_CHANNEL_ENABLED`, `WHATSAPP_CHANNEL_ENABLED`, `WHATSAPP_PERSONAL_CHANNEL_ENABLED`, `MAX_CHANNEL_ENABLED`, `MAX_PERSONAL_CHANNEL_ENABLED`
+Known flag names: `AI_SUGGESTIONS_ENABLED`, `DECISION_ENGINE_ENABLED`, `AI_AUTOSEND_ENABLED`, `HUMAN_DELAY_ENABLED`, `RAG_ENABLED`, `FEW_SHOT_LEARNING`, `TELEGRAM_CHANNEL_ENABLED`, `TELEGRAM_PERSONAL_CHANNEL_ENABLED`, `WHATSAPP_CHANNEL_ENABLED`, `WHATSAPP_PERSONAL_CHANNEL_ENABLED`, `MAX_CHANNEL_ENABLED`, `MAX_PERSONAL_CHANNEL_ENABLED`, `AUTO_PARTS_ENABLED`
+
+**Partial unique indexes** (added migration 0013):
+- `feature_flags_global_unique` — UNIQUE on `name` WHERE `tenant_id IS NULL` (global flags)
+- `feature_flags_tenant_unique` — UNIQUE on `(name, tenant_id)` WHERE `tenant_id IS NOT NULL` (per-tenant overrides)
+
+**Flag storage in `feature_flags.json`:** All flags in this file are keyed as `global:<FLAG_NAME>` (e.g., `global:AI_SUGGESTIONS_ENABLED`). They serve as defaults seeded into the database at startup.
 
 ---
 
@@ -1128,6 +1138,34 @@ Added in migration `0010_add_tenant_agent_settings.sql`. Mileage tier columns ad
 
 ---
 
+### max_personal_accounts
+
+MAX Personal (GREEN-API) accounts. Supports multiple accounts per tenant. Added in migrations `0014_max_personal_accounts.sql` + `0015_max_personal_multiaccount.sql`.
+
+Each account corresponds to one GREEN-API instance (phone number registered on the GREEN-API.com platform).
+
+| Column | Type | Nullable | Default | Constraints | Description |
+|--------|------|----------|---------|-------------|-------------|
+| id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Account UUID |
+| tenant_id | varchar | NO | — | FK → tenants.id | Owning tenant |
+| account_id | text | YES | — | — | Stable public identifier (added in 0015) |
+| id_instance | text | NO | — | — | GREEN-API instance ID |
+| api_token_instance | text | NO | — | — | GREEN-API API token (encrypted at rest) |
+| label | text | YES | — | — | Friendly name for the account |
+| display_name | text | YES | — | — | Display name shown in UI |
+| status | text | NO | `'pending'` | — | Account status |
+| webhook_registered | boolean | YES | `false` | — | Whether webhook is registered with GREEN-API |
+| created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Creation timestamp |
+| updated_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Last update timestamp |
+
+**Indexes:**
+- `max_personal_accounts_tenant_instance_unique` — UNIQUE on `(tenant_id, id_instance)` (added in 0015, replacing old unique on tenant_id)
+- `max_personal_accounts_tenant_idx` on `tenant_id`
+
+**Note:** Early migration (0014) created this table with a single-account-per-tenant constraint. Migration 0015 dropped that constraint to allow multiple accounts per tenant, matching the Telegram Personal model.
+
+---
+
 ## Relationships
 
 ```
@@ -1174,6 +1212,7 @@ tenants
  ├── message_templates     (tenant_id → tenants.id)
  ├── payment_methods       (tenant_id → tenants.id)
  ├── tenant_agent_settings (tenant_id → tenants.id)  [1:1]
+ ├── max_personal_accounts (tenant_id → tenants.id)
  └── proxies               (assigned_tenant_id → tenants.id)
 
 users
@@ -1244,7 +1283,7 @@ vehicle_lookup_cache
 |---|------|-------------|
 | 0 | `0000_pre_migration_check_duplicates.sql` | Pre-flight query to detect duplicate emails before creating unique index. No schema changes. |
 | 1a | `0001a_normalize_emails.sql` | Normalizes existing emails to `LOWER(TRIM(email))`. Idempotent data migration. |
-| 1b | `0001b_create_email_unique_index.sql` *(manual)* | Creates `users_email_unique_lower_idx` using `CONCURRENTLY` (cannot run in transaction). |
+| 1b | `0001b_create_email_unique_index.sql` *(manual)* | Creates `users_email_unique_lower_idx` using `CONCURRENTLY` (cannot run in transaction). Copy from `migrations/manual/`. |
 | 2 | `0002_subscription_grants_indexes.sql` | Creates `subscription_grants_active_lookup_idx` for fast grant lookups. |
 | 3 | `0003_vehicle_lookup_tables.sql` | Creates `vehicle_lookup_cache` and `vehicle_lookup_cases` tables with indexes. |
 | 4 | `0004_tenants_templates.sql` | Adds `templates` (JSONB) column to `tenants`. |
@@ -1257,6 +1296,9 @@ vehicle_lookup_cache
 | 10 | `0010_add_tenant_agent_settings.sql` | Creates `tenant_agent_settings` table with UNIQUE constraint on `tenant_id` and index. |
 | 11 | `0011_update_price_snapshots.sql` | Makes `tenant_id` nullable (global cache), adds `model_name`, `manufacturer`, `origin`, `mileage_min`, `mileage_max`, `listings_count`, `search_query`, `expires_at`. Adds `idx_price_snapshots_oem_expires` index. |
 | 12 | `0012_add_mileage_tiers.sql` | Adds `mileage_low`, `mileage_mid`, `mileage_high` integer columns to `tenant_agent_settings` for two-step price dialog tier splitting. |
+| 13 | `0013_feature_flags_composite_unique.sql` | Fixes feature_flags uniqueness to support per-tenant overrides. Drops old column-level unique. Creates two partial unique indexes: `feature_flags_global_unique` (name WHERE tenant_id IS NULL) and `feature_flags_tenant_unique` (name, tenant_id WHERE tenant_id IS NOT NULL). |
+| 14 | `0014_max_personal_accounts.sql` | Creates `max_personal_accounts` table for MAX Personal (GREEN-API) integration. Initial version: single account per tenant. |
+| 15 | `0015_max_personal_multiaccount.sql` | Drops single-account-per-tenant constraint. Adds `account_id` column (stable public identifier) and `label` column. Creates new unique constraint on `(tenant_id, id_instance)` to allow multiple accounts per tenant. |
 
 ---
 
@@ -1271,4 +1313,4 @@ vehicle_lookup_cache
 | **DB connection** | `server/db.ts` — creates `Pool` from `pg` and Drizzle instance with all schema tables |
 | **Migrations** | `./migrations/` — SQL migration files, applied in numeric order |
 
-The main schema file (`shared/schema.ts`) at ~1384 lines is the single source of truth for all database entities. Tables are defined using Drizzle's `pgTable()`, insert schemas are generated via `createInsertSchema()` from `drizzle-zod`, and TypeScript types are inferred using `$inferSelect` / `$inferInsert`.
+The main schema file (`shared/schema.ts`) at ~1564 lines is the single source of truth for all database entities. Tables are defined using Drizzle's `pgTable()`, insert schemas are generated via `createInsertSchema()` from `drizzle-zod`, and TypeScript types are inferred using `$inferSelect` / `$inferInsert`.

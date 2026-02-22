@@ -720,5 +720,23 @@ The following significant features exist in code but are not documented in any f
 
 ---
 
+## Section 11: Improvements Applied 2026-02-22 (Transmission Identification & Parser)
+
+| # | Improvement | File(s) | Lines changed | Description |
+|---|-------------|---------|---------------|-------------|
+| IMP-01 | `VehicleContext` interface + context-aware GPT prompt in `identifyTransmissionByOem()` | `server/services/transmission-identifier.ts` | +22 | Added `VehicleContext` interface with fields `make`, `model`, `year`, `engine`, `body`, `driveType`, `gearboxModelHint`, `factoryCode`. Extended `identifyTransmissionByOem(oem, context?)` to build a multi-line user prompt that includes all non-null context fields before the identify instruction. Fully backwards-compatible — `context` is optional. |
+| IMP-02 | `vehicleContext` field added to `PriceLookupJobData` | `server/services/price-lookup-queue.ts` | +2 | Added optional `vehicleContext?: VehicleContext` field to the BullMQ job data interface, imported via `import type { VehicleContext }` from `transmission-identifier`. No change to `enqueuePriceLookup` function signature — backwards-compatible. |
+| IMP-03 | Vehicle context forwarded from `vehicle-lookup.worker.ts` (Path A — high-confidence OEM) | `server/workers/vehicle-lookup.worker.ts` | +16 | In the `lookupConfidence >= 0.85 && oemStatus === "FOUND"` branch, `vehicleMeta` is now cast to include `driveType` and a `VehicleContext` object is constructed from make/model/year/engine/body/driveType/gearboxModelHint/factoryCode and passed as `vehicleContext` to `enqueuePriceLookup`. `year` (number in vehicleMeta) is converted to string via `String()`. Added `import type { VehicleContext }` at top of file. |
+| IMP-04 | `vehicleContext` threaded into `identifyTransmissionByOem()` call in price-lookup worker | `server/workers/price-lookup.worker.ts` | +5 | Added `VehicleContext` to imports from `transmission-identifier`. Extended `lookupPricesByOem()` signature with optional `vehicleContext?: VehicleContext`. `processPriceLookup` now destructures `vehicleContext` from `job.data` and passes it to `lookupPricesByOem()`, which then forwards it to `identifyTransmissionByOem(oem, vehicleContext)`. When `oemModelHint` is present the GPT call is still skipped (shortcircuit unchanged). |
+| IMP-05 | Drive type (`привод`) parsing in Podzamenu Python parser | `podzamenu_lookup_service.py` | +10 | Added `"привод"`, `"тип привода"`, `"drive"`, `"drivetrain"` entries to `META_LABELS` → maps to `"driveType"` key in `vehicleMeta`. Extended `_extract_vehicle_info_js` JS evaluator: (a) added `driveIdx` header search covering all four variants; (b) added `meta.driveType` extraction from horizontal table data rows; (c) added drive-type key-value pair detection in the 2b loop. `_extract_meta_from_page` automatically benefits via the updated `META_LABELS` iteration. `driveType` is returned as part of `vehicleMeta` in `LookupResponse` without any schema change. |
+
+### Impact
+
+- GPT-4o-mini now receives vehicle make/model/year/engine/chassis/drive-type context when identifying an OEM transmission code, improving confidence and accuracy — especially for OEM codes shared across multiple brands or variants.
+- Drive type data (`FWD`, `AWD`, `4WD`, `передний`, `полный`, etc.) is captured from podzamenu tables and flows end-to-end: parser → vehicleMeta → vehicleContext → GPT prompt.
+- All changes are backwards-compatible: existing jobs without `vehicleContext` continue to work as before.
+
+---
+
 *End of audit. Initial audit: 2026-02-20. Updated: 2026-02-22.*
 *All 9 critical issues from initial audit have been fixed.*

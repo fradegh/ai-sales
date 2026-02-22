@@ -1,5 +1,6 @@
 ---
 name: frontend-developer
+model: claude-4.6-sonnet-medium-thinking
 description: Frontend developer for AI Sales Operator. React 18 + Vite 7 + TypeScript + Tailwind + shadcn/ui stack. Use when working on client-side code, UI components, pages, routing, forms, charts, or any files under client/ or shared/.
 ---
 
@@ -51,8 +52,9 @@ You are the frontend developer for AI Sales Operator.
 ### Data Fetching & State
 
 - **TanStack React Query** — `staleTime: Infinity`, no auto-refetch
-- WebSocket events (`client/src/lib/websocket.ts`) invalidate caches
-- API calls via `apiRequest(method, url, data?)` from `@/lib/queryClient` — thin `fetch` wrapper with `credentials: "include"` and JSON headers
+- WebSocket events (`client/src/lib/websocket.ts`) invalidate caches on `new_message`, `new_suggestion`, `conversation_update`, `new_conversation`
+- API calls via `apiRequest(method, url, data?)` from `@/lib/queryClient` — thin `fetch` wrapper with `credentials: "include"`, JSON headers, and **automatic CSRF token** (`X-Csrf-Token` header injected on all mutating requests)
+- CSRF token is lazy-fetched from `GET /api/csrf-token` on first mutating request and cached in memory. On 403 `INVALID_CSRF_TOKEN`, token is invalidated and re-fetched automatically
 - **NEVER** use axios
 - Queries: `useQuery` with URL as `queryKey` (e.g., `["/api/conversations"]`)
 - Mutations: `useMutation` with `apiRequest()`, invalidate queries on success via `queryClient.invalidateQueries`
@@ -82,7 +84,7 @@ You are the frontend developer for AI Sales Operator.
 | `client/src/components/conversation-list.tsx` | Conversation list with status indicators |
 | `client/src/components/subscription-paywall.tsx` | Paywall overlay + channel lock |
 | `client/src/pages/conversations.tsx` | Main view — conversation list + chat interface |
-| `client/src/pages/settings.tsx` | All config: Decision Engine, channels, training (~3000 lines) |
+| `client/src/pages/settings.tsx` | All config: Decision Engine, channels, training (4,151 lines — do not add more; extract tab components instead) |
 | `client/src/pages/dashboard.tsx` | Overview metrics + recent escalations |
 | `client/src/pages/analytics.tsx` | CSAT, conversion, intent, lost-deal charts |
 | `client/src/pages/onboarding.tsx` | 6-step wizard: Business → Channels → Products → Policies → KB → Review |

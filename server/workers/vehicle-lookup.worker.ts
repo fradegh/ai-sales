@@ -11,6 +11,7 @@ import type { GearboxInfo } from "../services/podzamenu-lookup-client";
 import { fillGearboxTemplate } from "../services/gearbox-templates";
 import { detectGearboxType } from "../services/price-sources/types";
 import { storage } from "../storage";
+import type { VehicleContext } from "../services/transmission-identifier";
 
 const QUEUE_NAME = "vehicle_lookup_queue";
 
@@ -288,7 +289,26 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       console.log(`[VehicleLookupWorker] Auto-started price lookup (VW Group MODEL_ONLY, model: ${gearbox.model}).`);
     } else if (lookupConfidence >= 0.85 && gearbox.oemStatus === "FOUND" && gearbox.oem) {
       const { enqueuePriceLookup } = await import("../services/price-lookup-queue");
-      await enqueuePriceLookup({ tenantId, conversationId, oem: gearbox.oem, oemModelHint: gearbox.model ?? null });
+      const vehicleMeta = lookupResult.vehicleMeta as {
+        make?: string; model?: string; year?: number; engine?: string; body?: string; driveType?: string;
+      } | undefined;
+      const vehicleContext: VehicleContext = {
+        make: vehicleMeta?.make ?? null,
+        model: vehicleMeta?.model ?? null,
+        year: vehicleMeta?.year != null ? String(vehicleMeta.year) : null,
+        engine: vehicleMeta?.engine ?? null,
+        body: vehicleMeta?.body ?? null,
+        driveType: vehicleMeta?.driveType ?? null,
+        gearboxModelHint: gearbox.model ?? null,
+        factoryCode: gearbox.factoryCode ?? null,
+      };
+      await enqueuePriceLookup({
+        tenantId,
+        conversationId,
+        oem: gearbox.oem,
+        oemModelHint: gearbox.model ?? null,
+        vehicleContext,
+      });
       console.log("[VehicleLookupWorker] Auto-started price lookup (high confidence OEM).");
     } else if (gearbox.oemStatus !== "FOUND" || !gearbox.oem) {
       await tryFallbackPriceLookup({

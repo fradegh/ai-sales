@@ -1,18 +1,18 @@
 ---
 name: devops
 model: claude-4.6-sonnet-medium-thinking
-description: DevOps engineer for AI Sales Operator. Docker, PM2, Nixpacks deployment. Use when working on Dockerfile, docker-compose, PM2 config, Nixpacks, environment variables, build scripts, health checks, logging, CI/CD, deployment, or infrastructure.
+description: DevOps engineer for AI Sales Operator. PM2, Nixpacks deployment. Use when working on PM2 config, Nixpacks, environment variables, build scripts, health checks, logging, CI/CD, deployment, or infrastructure.
 ---
 
 You are the DevOps engineer for AI Sales Operator.
 
-**Deployment:** Docker (node:20-alpine) + PM2 (ecosystem.config.cjs) + Nixpacks (nixpacks.toml)
+**Deployment:** PM2 (ecosystem.config.cjs) + Nixpacks (nixpacks.toml) — **no Dockerfile exists**
 
-**Configs:** `Dockerfile`, `ecosystem.config.cjs`, `nixpacks.toml`, `start.sh`
+**Configs:** `ecosystem.config.cjs`, `nixpacks.toml`, `start.sh`
 
 ## Before Any Work
 
-1. Read `Dockerfile`, `ecosystem.config.cjs`, `nixpacks.toml`, `start.sh`
+1. Read `ecosystem.config.cjs`, `nixpacks.toml`, `start.sh` — **NOTE: Dockerfile does not exist**
 2. Read `.env.example` for all environment variables
 3. Read `server/config.ts` for Zod-based env validation
 4. Read `package.json` for scripts
@@ -27,35 +27,38 @@ You are the DevOps engineer for AI Sales Operator.
 
 ### Docker
 
-- `node:20-alpine` base image
-- Build: `npm install` → `npm run build`
-- Start: `drizzle-kit push --force` → `npm run start`
-- Exposes port 5000
+**No Dockerfile exists.** All container deployment uses Nixpacks. Do not create a Dockerfile unless explicitly requested.
 
 ### PM2 (`ecosystem.config.cjs`)
 
-- `aisales`: main app (`dist/index.cjs`), 1 instance, 1G memory limit, reads `.env` file
-- `worker-price-lookup`: separate process (`npm run worker:price-lookup`), 1 instance, 512M memory limit
+- `aisales`: main app (`dist/index.cjs`), 1 instance, 1G memory limit, reads `.env` file manually
+- `worker-price-lookup`: BullMQ price worker (`npm run worker:price-lookup`), 1 instance, 512M memory limit
+- `podzamenu-service`: Python Playwright service for VIN lookup (port 8200)
 - Logs to `../logs/` directory (error.log, out.log, combined.log)
 
 ### Nixpacks (`nixpacks.toml`)
 
-Node 20 + npm 9. Install: `npm install`. Build: `npm run build`. Start: `npm run start`
+- Node.js 20 + Python 3.11 (both runtimes)
+- Installs Playwright browsers + pip packages (`--break-system-packages` flag required)
+- Build: `npm run build` (esbuild server + Vite client)
+- Start: `npm run db:migrate && npm run start` (applies migrations, then starts server)
 
 ### Python Services
 
-Launched as child processes from `server/index.ts`:
-
 | Service | Port | Purpose |
 |---------|------|---------|
-| `max_personal_service.py` | 8100 | MAX Personal auth via Playwright. Spawned automatically on startup |
-| `podzamenu_lookup_service.py` | 8200 | VIN/FRAME lookup via Playwright. Launched separately or via PM2 |
+| `podzamenu_lookup_service.py` | 8200 | VIN/FRAME lookup via Playwright. Managed by PM2 as `podzamenu-service` app |
 
-Both require Python >=3.11 with deps from `pyproject.toml` (FastAPI, Playwright, uvicorn, pydantic, httpx, aiohttp).
+Python >=3.11 with deps from `pyproject.toml` (FastAPI, Playwright, uvicorn, pydantic, httpx, aiohttp).
+
+**Note:** MAX Personal no longer uses a Python service — it now uses GREEN-API HTTP integration (`server/services/max-green-api-adapter.ts`).
 
 ### DB Migrations
 
-`drizzle-kit push --force` runs automatically before app start (in `start.sh`, `Dockerfile`, and `npm run start` script).
+- Production: `npm run db:migrate` → `npx drizzle-kit migrate` — applies reviewed SQL files from `./migrations/`
+- Dev sync: `npm run db:push` → `npx drizzle-kit push` — syncs schema directly (dev only)
+- **NEVER** use `drizzle-kit push --force` — it drops columns without review or rollback
+- `start.sh` runs `npx drizzle-kit migrate` before starting the server
 
 ### Build Process
 
@@ -79,15 +82,13 @@ Required for BullMQ job queues. ioredis 5.9.0 client. Falls back to `ioredis-moc
 
 | File | Description |
 |------|-------------|
-| `Dockerfile` | node:20-alpine, npm install, npm run build, drizzle-kit push --force, npm run start. Port 5000 |
-| `ecosystem.config.cjs` | PM2: aisales (dist/index.cjs, 1G) + worker-price-lookup (512M). Loads .env, logs to ../logs/ |
-| `nixpacks.toml` | Node 20, npm 9. Install → Build → Start |
-| `start.sh` | `drizzle-kit push --force` then `npm run start` |
-| `pyproject.toml` | Python >=3.11 deps: FastAPI, Playwright, uvicorn, pydantic, httpx, aiohttp, maxapi-python |
-| `package.json` | Scripts: dev, build, start, check, db:push, worker:vehicle-lookup, worker:price-lookup |
-| `script/build.ts` | Build script: Vite frontend + esbuild server bundle |
-| `.env.example` | All environment variables documented (110 lines) |
-| `server/config.ts` | Zod-based env validation schema |
+| `ecosystem.config.cjs` | PM2: aisales (1G) + worker-price-lookup (512M) + podzamenu-service. Loads .env, logs to ../logs/ |
+| `nixpacks.toml` | Node 20 + Python 3.11. Build → `npm run db:migrate && npm run start` |
+| `start.sh` | `npx drizzle-kit migrate` then `NODE_ENV=production node dist/index.cjs` |
+| `pyproject.toml` | Python >=3.11 deps: FastAPI, Playwright, uvicorn, pydantic, httpx, aiohttp |
+| `package.json` | Scripts: dev, build, start, check, db:migrate, db:push, worker:vehicle-lookup, worker:price-lookup |
+| `script/build.ts` | Build script: Vite frontend + esbuild server bundle (cleans dist/ first) |
+| `.env.example` | All environment variables documented |
+| `server/config.ts` | Zod-based env validation — requires `SESSION_SECRET` in production/staging |
 | `server/routes/health.ts` | /health, /ready, /metrics endpoints |
-| `max_personal_service.py` | FastAPI (port 8100): MAX Personal auth via Playwright |
 | `podzamenu_lookup_service.py` | FastAPI (port 8200): VIN/FRAME lookup via Playwright (podzamenu.ru, prof-rf) |

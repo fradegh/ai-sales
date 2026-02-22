@@ -174,6 +174,21 @@ Response headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Res
 
 ## Endpoints
 
+### CSRF Token
+
+#### GET `/api/csrf-token`
+
+Returns a CSRF token for use in state-mutating requests. Required for all POST/PUT/PATCH/DELETE calls.
+
+- **Auth:** None required
+- **Response 200:** `{ "token": "string" }`
+
+The token is cached client-side and sent as `X-Csrf-Token` header on every mutating API request. Invalidated automatically on 403 with `INVALID_CSRF_TOKEN`. Implemented using `csrf-csrf` v4 with double-submit cookie pattern.
+
+**Webhook paths are exempt** from CSRF validation (`/webhooks/*`, `/api/max-personal/incoming`).
+
+---
+
 ### Health & Metrics
 
 #### GET `/health`
@@ -1163,38 +1178,38 @@ Start a vehicle lookup by VIN or FRAME number.
 
 #### GET `/api/price-settings`
 
-Get price display settings.
+Get price display settings. Data is stored inside `tenants.templates.priceSettings` JSONB — there is no dedicated `price_settings` table.
 
 - **Auth:** `requireAuth`
 - **Response 200:**
 
 ```json
 {
-  "marginPct": 15,
+  "marginPct": -25,
   "roundTo": 100,
   "priceNote": "string",
-  "showMarketPrice": true
+  "showMarketPrice": false
 }
 ```
 
 #### PUT `/api/price-settings`
 
-Update price display settings.
+Update price display settings (stored inside `tenants.templates.priceSettings` JSONB).
 
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_TENANT_SETTINGS")`
 - **Request Body:**
 
 ```json
 {
-  "marginPct": 15,
+  "marginPct": -25,
   "roundTo": 1 | 10 | 100 | 1000,
   "priceNote": "string (max 200)",
-  "showMarketPrice": true
+  "showMarketPrice": false
 }
 ```
 
-- **Validation:** `marginPct` range: -50 to 50
-- **Response 200:** Updated settings
+- **Validation:** `marginPct` range: -50 to 50; `roundTo` must be one of 1, 10, 100, 1000
+- **Response 200:** Updated settings object
 
 #### POST `/api/conversations/:id/price-lookup`
 
@@ -1533,14 +1548,23 @@ Get channel feature flags.
 
 ```json
 {
-  "MAX_CHANNEL_ENABLED": true,
-  "MAX_PERSONAL_CHANNEL_ENABLED": false,
-  "TELEGRAM_CHANNEL_ENABLED": true,
+  "MAX_CHANNEL_ENABLED": false,
+  "MAX_PERSONAL_CHANNEL_ENABLED": true,
+  "TELEGRAM_CHANNEL_ENABLED": false,
   "TELEGRAM_PERSONAL_CHANNEL_ENABLED": true,
   "WHATSAPP_CHANNEL_ENABLED": false,
-  "WHATSAPP_PERSONAL_CHANNEL_ENABLED": false
+  "WHATSAPP_PERSONAL_CHANNEL_ENABLED": true,
+  "AI_SUGGESTIONS_ENABLED": true,
+  "DECISION_ENGINE_ENABLED": false,
+  "AI_AUTOSEND_ENABLED": false,
+  "HUMAN_DELAY_ENABLED": false,
+  "RAG_ENABLED": true,
+  "FEW_SHOT_LEARNING": true,
+  "AUTO_PARTS_ENABLED": false
 }
 ```
+
+> **`AUTO_PARTS_ENABLED`** — gates the VIN/FRAME auto-detection pipeline in `inbound-message-handler.ts`. When `false`, incoming messages skip vehicle lookup and go directly to AI suggestion generation. Not currently in `feature_flags.json` defaults (treated as `false` when absent).
 
 #### POST `/api/channels/:channel/toggle`
 
@@ -1742,9 +1766,58 @@ Get connection status.
 
 ### Max Personal
 
+MAX Personal integration uses **GREEN-API** (https://green-api.com) — a cloud-based WhatsApp/Max gateway. Each account corresponds to a GREEN-API instance (`idInstance` + `apiTokenInstance`). Multiple accounts per tenant are supported (stored in `max_personal_accounts` table).
+
+#### GET `/api/max-personal/accounts`
+
+List all MAX Personal accounts for the tenant.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`
+- **Response 200:**
+
+```json
+{
+  "accounts": [{
+    "id": "uuid",
+    "tenantId": "uuid",
+    "idInstance": "string",
+    "apiTokenInstance": "string",
+    "label": "string | null",
+    "displayName": "string | null",
+    "status": "string",
+    "webhookRegistered": true,
+    "createdAt": "ISO datetime"
+  }]
+}
+```
+
+#### POST `/api/max-personal/accounts`
+
+Add a new GREEN-API account.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`, `requireActiveSubscription`, `requireActiveTenant`
+- **Request Body:**
+
+```json
+{
+  "idInstance": "string",
+  "apiTokenInstance": "string",
+  "label": "string (optional)"
+}
+```
+
+- **Response 201:** Created account object
+
+#### DELETE `/api/max-personal/accounts/:id`
+
+Remove a MAX Personal account.
+
+- **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`
+- **Response 200:** `{ "success": true }`
+
 #### POST `/api/max-personal/start-auth`
 
-Start QR-based Max auth.
+Start QR-based Max auth (legacy single-account flow).
 
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`, `requireActiveSubscription`
 - **Response 200:** `{ "success": true, "status": "qr_ready | connected", "qrCode": "string", "qrDataUrl": "string", "user": { ... } }`
@@ -1752,21 +1825,21 @@ Start QR-based Max auth.
 
 #### POST `/api/max-personal/check-auth`
 
-Poll auth status.
+Poll auth status (legacy single-account flow).
 
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`
 - **Response 200:** `{ "success": true, "status": "string", "user": { ... } }`
 
 #### POST `/api/max-personal/logout`
 
-Disconnect Max personal.
+Disconnect Max personal (legacy single-account flow).
 
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`
 - **Response 200:** Logout result
 
 #### GET `/api/max-personal/status`
 
-Get connection status.
+Get connection status (legacy single-account flow).
 
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CHANNELS")`
 - **Response 200:** `{ "connected": true, "status": "string", "user": { ... } }`
@@ -1780,7 +1853,7 @@ Check if the Max Personal Python microservice is available.
 
 #### POST `/api/max-personal/incoming` *(internal)*
 
-Receives messages from the Max Personal Python microservice.
+Receives messages from the GREEN-API webhook or Max Personal Python microservice.
 
 - **Auth:** `X-Internal-Secret` header (matches `MAX_INTERNAL_SECRET` or `SESSION_SECRET`)
 - **Request Body:** `{ "tenant_id": "uuid", "message": { ... } }`

@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 import { getRedisConnectionConfig } from "./message-queue";
 import type { GearboxType } from "./price-sources/types";
+import type { VehicleContext } from "./transmission-identifier";
 
 export interface SearchFallback {
   make: string | null;
@@ -14,6 +15,7 @@ export interface PriceLookupJobData {
   conversationId: string;
   oem: string | null;
   oemModelHint?: string | null;
+  vehicleContext?: VehicleContext;
   searchFallback?: SearchFallback;
   isModelOnly?: boolean;
 }
