@@ -124,7 +124,13 @@ const INTENT_OPTIONS = VALID_INTENTS.map(value => ({
   label: INTENT_LABELS[value] || value,
 }));
 
-function DecisionEngineSettings() {
+const AUTO_PARTS_INTENTS = new Set(["invalid_vin", "marking_provided", "want_visit", "what_included", "mileage_preference"]);
+
+interface DecisionEngineSettingsProps {
+  autoPartsEnabled?: boolean;
+}
+
+function DecisionEngineSettings({ autoPartsEnabled = false }: DecisionEngineSettingsProps) {
   const { toast } = useToast();
   
   const { data: settings, isLoading } = useQuery<DecisionSettings>({
@@ -281,7 +287,7 @@ function DecisionEngineSettings() {
                 Выберите типы запросов, для которых разрешена автоотправка
               </p>
               <div className="flex flex-wrap gap-2">
-                {INTENT_OPTIONS.map((intent) => (
+                {INTENT_OPTIONS.filter(i => autoPartsEnabled || !AUTO_PARTS_INTENTS.has(i.value)).map((intent) => (
                   <Badge
                     key={intent.value}
                     variant={intentsAutosendAllowed.includes(intent.value) ? "default" : "outline"}
@@ -303,12 +309,12 @@ function DecisionEngineSettings() {
         <Separator />
 
         <div className="space-y-2">
-          <Label>Интенты для обязательной передачи оператору</Label>
+          <Label>Интенты → всегда эскалировать (ESCALATE)</Label>
           <p className="text-xs text-muted-foreground mb-2">
-            Эти типы запросов всегда требуют вмешательства оператора
+            Эти интенты всегда вызывают полную эскалацию оператору — независимо от уверенности AI
           </p>
           <div className="flex flex-wrap gap-2">
-            {INTENT_OPTIONS.map((intent) => (
+            {INTENT_OPTIONS.filter(i => autoPartsEnabled || !AUTO_PARTS_INTENTS.has(i.value)).map((intent) => (
               <Badge
                 key={intent.value}
                 variant={intentsForceHandoff.includes(intent.value) ? "default" : "outline"}
@@ -571,7 +577,11 @@ interface TrainingPolicy {
   updatedAt: string;
 }
 
-function TrainingPoliciesSettings() {
+interface TrainingPoliciesSettingsProps {
+  autoPartsEnabled?: boolean;
+}
+
+function TrainingPoliciesSettings({ autoPartsEnabled = false }: TrainingPoliciesSettingsProps) {
   const { toast } = useToast();
 
   const { data: policy, isLoading } = useQuery<TrainingPolicy>({
@@ -666,12 +676,12 @@ function TrainingPoliciesSettings() {
       <CardContent className="space-y-6">
         <div className="space-y-4">
           <div>
-            <Label className="mb-2 block">Интенты всегда требующие проверки</Label>
+            <Label className="mb-2 block">Интенты → требовать одобрения (NEED_APPROVAL)</Label>
             <p className="text-xs text-muted-foreground mb-2">
-              Эти интенты никогда не будут автоматически отправлены — всегда требуется проверка оператором
+              Понижает AUTO_SEND до ручной проверки — NOT эскалация, просто требует одобрения оператора
             </p>
             <div className="flex flex-wrap gap-2">
-              {INTENT_OPTIONS.map((intent) => (
+              {INTENT_OPTIONS.filter(i => autoPartsEnabled || !AUTO_PARTS_INTENTS.has(i.value)).map((intent) => (
                 <Badge
                   key={intent.value}
                   variant={alwaysEscalateIntents.includes(intent.value) ? "default" : "outline"}
@@ -696,7 +706,7 @@ function TrainingPoliciesSettings() {
               Ответы с этими интентами не будут использоваться в few-shot примерах для AI
             </p>
             <div className="flex flex-wrap gap-2">
-              {INTENT_OPTIONS.map((intent) => (
+              {INTENT_OPTIONS.filter(i => autoPartsEnabled || !AUTO_PARTS_INTENTS.has(i.value)).map((intent) => (
                 <Badge
                   key={intent.value}
                   variant={disabledLearningIntents.includes(intent.value) ? "default" : "outline"}
@@ -2494,6 +2504,7 @@ const TEMPLATE_TYPE_LABELS: Record<string, string> = {
   price_options: "Варианты (выбор)",
   payment_options: "Варианты оплаты",
   not_found: "Не найдено",
+  tag_request: "Запрос шильдика",
 };
 
 const PRICE_RESULT_VARIABLES = [
@@ -2776,7 +2787,7 @@ function TemplatesTab() {
                   <SelectContent>
                     {Object.entries(TEMPLATE_TYPE_LABELS)
                       .filter(([val]) =>
-                        autoPartsEnabled ? true : val !== "price_result" && val !== "price_options"
+                        autoPartsEnabled ? true : val !== "price_result" && val !== "price_options" && val !== "tag_request"
                       )
                       .map(([val, label]) => (
                         <SelectItem key={val} value={val}>
@@ -3196,7 +3207,11 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = `Вы — профессиональный �
 3. Отвечайте кратко и по существу.
 4. При вопросах о скидках и жалобах — переключайте на оператора.`;
 
-function AgentSettingsTab() {
+interface CompanyAgentCardProps {
+  autoPartsEnabled?: boolean;
+}
+
+function CompanyAgentCard({ autoPartsEnabled = false }: CompanyAgentCardProps) {
   const { toast } = useToast();
 
   const [companyName, setCompanyName] = useState("");
@@ -3206,12 +3221,6 @@ function AgentSettingsTab() {
   const [warrantyKm, setWarrantyKm] = useState("");
   const [installDays, setInstallDays] = useState("");
   const [qrDiscountPercent, setQrDiscountPercent] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [objectionPayment, setObjectionPayment] = useState("");
-  const [objectionOnline, setObjectionOnline] = useState("");
-  const [closingScript, setClosingScript] = useState("");
-  const [customFacts, setCustomFacts] = useState<Array<{ key: string; value: string }>>([]);
-  const [showDefaultPrompt, setShowDefaultPrompt] = useState(false);
   const [mileageLow, setMileageLow] = useState("");
   const [mileageMid, setMileageMid] = useState("");
   const [mileageHigh, setMileageHigh] = useState("");
@@ -3229,12 +3238,6 @@ function AgentSettingsTab() {
       setWarrantyKm(settings.warrantyKm?.toString() ?? "");
       setInstallDays(settings.installDays?.toString() ?? "");
       setQrDiscountPercent(settings.qrDiscountPercent?.toString() ?? "");
-      setSystemPrompt(settings.systemPrompt ?? "");
-      setObjectionPayment(settings.objectionPayment ?? "");
-      setObjectionOnline(settings.objectionOnline ?? "");
-      setClosingScript(settings.closingScript ?? "");
-      const facts = (settings.customFacts as Record<string, string> | null) ?? {};
-      setCustomFacts(Object.entries(facts).map(([key, value]) => ({ key, value: String(value) })));
       setMileageLow(settings.mileageLow?.toString() ?? "");
       setMileageMid(settings.mileageMid?.toString() ?? "");
       setMileageHigh(settings.mileageHigh?.toString() ?? "");
@@ -3248,7 +3251,230 @@ function AgentSettingsTab() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/agent-settings"] });
-      toast({ title: "Настройки агента сохранены" });
+      toast({ title: "Настройки компании сохранены" });
+    },
+    onError: () => {
+      toast({ title: "Не удалось сохранить настройки", variant: "destructive" });
+    },
+  });
+
+  function handleSave() {
+    saveMutation.mutate({
+      ...(settings ?? {}),
+      companyName: companyName.trim() || null,
+      specialization: specialization.trim() || null,
+      warehouseCity: warehouseCity.trim() || null,
+      warrantyMonths: warrantyMonths !== "" ? parseInt(warrantyMonths, 10) : null,
+      warrantyKm: warrantyKm !== "" ? parseInt(warrantyKm, 10) : null,
+      installDays: installDays !== "" ? parseInt(installDays, 10) : null,
+      qrDiscountPercent: qrDiscountPercent !== "" ? parseInt(qrDiscountPercent, 10) : null,
+      mileageLow: mileageLow !== "" ? parseInt(mileageLow, 10) : null,
+      mileageMid: mileageMid !== "" ? parseInt(mileageMid, 10) : null,
+      mileageHigh: mileageHigh !== "" ? parseInt(mileageHigh, 10) : null,
+    });
+  }
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader><Skeleton className="h-6 w-48" /></CardHeader>
+        <CardContent><Skeleton className="h-32 w-full" /></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>О компании</CardTitle>
+          <CardDescription>
+            Эти данные AI агент использует при общении с клиентами
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="company-name">Название компании</Label>
+              <Input
+                id="company-name"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                placeholder="Название вашей организации"
+                data-testid="input-company-name"
+              />
+              <p className="text-xs text-muted-foreground">
+                Используется AI агентом при общении с клиентами
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-specialization">Специализация</Label>
+              <Input
+                id="company-specialization"
+                value={specialization}
+                onChange={(e) => setSpecialization(e.target.value)}
+                placeholder="Чем занимается ваша компания"
+                data-testid="input-company-specialization"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-warehouse-city">Город склада</Label>
+              <Input
+                id="company-warehouse-city"
+                value={warehouseCity}
+                onChange={(e) => setWarehouseCity(e.target.value)}
+                placeholder="Откуда отправляете товар"
+                data-testid="input-company-warehouse-city"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-warranty-months">Гарантия (месяцы)</Label>
+              <Input
+                id="company-warranty-months"
+                type="number"
+                value={warrantyMonths}
+                onChange={(e) => setWarrantyMonths(e.target.value)}
+                placeholder="12"
+                data-testid="input-company-warranty-months"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-warranty-km">Гарантия (км)</Label>
+              <Input
+                id="company-warranty-km"
+                type="number"
+                value={warrantyKm}
+                onChange={(e) => setWarrantyKm(e.target.value)}
+                placeholder="30000"
+                data-testid="input-company-warranty-km"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-install-days">Дней на установку</Label>
+              <Input
+                id="company-install-days"
+                type="number"
+                value={installDays}
+                onChange={(e) => setInstallDays(e.target.value)}
+                placeholder="14"
+                data-testid="input-company-install-days"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="company-qr-discount">Скидка при QR/СБП (%)</Label>
+              <Input
+                id="company-qr-discount"
+                type="number"
+                value={qrDiscountPercent}
+                onChange={(e) => setQrDiscountPercent(e.target.value)}
+                placeholder="10"
+                data-testid="input-company-qr-discount"
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {autoPartsEnabled && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Диапазоны пробега</CardTitle>
+            <CardDescription>
+              Определяет как разбивать варианты на категории по пробегу при двухшаговом диалоге цен
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="mileage-low">Низкий пробег (до, км)</Label>
+                <Input
+                  id="mileage-low"
+                  type="number"
+                  value={mileageLow}
+                  onChange={(e) => setMileageLow(e.target.value)}
+                  placeholder="60000"
+                  data-testid="input-mileage-low"
+                />
+                <p className="text-xs text-muted-foreground">Лучшие варианты — дороже</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mileage-mid">Средний пробег (до, км)</Label>
+                <Input
+                  id="mileage-mid"
+                  type="number"
+                  value={mileageMid}
+                  onChange={(e) => setMileageMid(e.target.value)}
+                  placeholder="90000"
+                  data-testid="input-mileage-mid"
+                />
+                <p className="text-xs text-muted-foreground">Оптимальные варианты</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mileage-high">Высокий пробег (от, км)</Label>
+                <Input
+                  id="mileage-high"
+                  type="number"
+                  value={mileageHigh}
+                  onChange={(e) => setMileageHigh(e.target.value)}
+                  placeholder="90000"
+                  data-testid="input-mileage-high"
+                />
+                <p className="text-xs text-muted-foreground">Бюджетные варианты — дешевле</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          onClick={handleSave}
+          disabled={saveMutation.isPending}
+          data-testid="button-save-company-settings"
+        >
+          {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          <Save className="mr-2 h-4 w-4" />
+          Сохранить
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AIAgentSettingsCard() {
+  const { toast } = useToast();
+
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [objectionPayment, setObjectionPayment] = useState("");
+  const [objectionOnline, setObjectionOnline] = useState("");
+  const [closingScript, setClosingScript] = useState("");
+  const [customFacts, setCustomFacts] = useState<Array<{ key: string; value: string }>>([]);
+  const [showDefaultPrompt, setShowDefaultPrompt] = useState(false);
+
+  const { data: settings, isLoading } = useQuery<TenantAgentSettings>({
+    queryKey: ["/api/agent-settings"],
+  });
+
+  useEffect(() => {
+    if (settings) {
+      setSystemPrompt(settings.systemPrompt ?? "");
+      setObjectionPayment(settings.objectionPayment ?? "");
+      setObjectionOnline(settings.objectionOnline ?? "");
+      setClosingScript(settings.closingScript ?? "");
+      const facts = (settings.customFacts as Record<string, string> | null) ?? {};
+      setCustomFacts(Object.entries(facts).map(([key, value]) => ({ key, value: String(value) })));
+    }
+  }, [settings]);
+
+  const saveMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await apiRequest("PUT", "/api/agent-settings", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-settings"] });
+      toast({ title: "Настройки AI агента сохранены" });
     },
     onError: () => {
       toast({ title: "Не удалось сохранить настройки агента", variant: "destructive" });
@@ -3261,21 +3487,12 @@ function AgentSettingsTab() {
       if (key.trim()) factsObj[key.trim()] = value;
     }
     saveMutation.mutate({
-      companyName: companyName.trim() || null,
-      specialization: specialization.trim() || null,
-      warehouseCity: warehouseCity.trim() || null,
-      warrantyMonths: warrantyMonths !== "" ? parseInt(warrantyMonths, 10) : null,
-      warrantyKm: warrantyKm !== "" ? parseInt(warrantyKm, 10) : null,
-      installDays: installDays !== "" ? parseInt(installDays, 10) : null,
-      qrDiscountPercent: qrDiscountPercent !== "" ? parseInt(qrDiscountPercent, 10) : null,
+      ...(settings ?? {}),
       systemPrompt: systemPrompt.trim() || null,
       objectionPayment: objectionPayment.trim() || null,
       objectionOnline: objectionOnline.trim() || null,
       closingScript: closingScript.trim() || null,
       customFacts: factsObj,
-      mileageLow: mileageLow !== "" ? parseInt(mileageLow, 10) : null,
-      mileageMid: mileageMid !== "" ? parseInt(mileageMid, 10) : null,
-      mileageHigh: mileageHigh !== "" ? parseInt(mileageHigh, 10) : null,
     });
   }
 
@@ -3294,11 +3511,10 @@ function AgentSettingsTab() {
   if (isLoading) {
     return (
       <div className="space-y-4">
-        {[1, 2, 3, 4].map((i) => (
+        {[1, 2, 3].map((i) => (
           <Card key={i}>
             <CardHeader>
               <Skeleton className="h-6 w-48" />
-              <Skeleton className="h-4 w-72 mt-1" />
             </CardHeader>
             <CardContent>
               <Skeleton className="h-32 w-full" />
@@ -3312,145 +3528,6 @@ function AgentSettingsTab() {
   return (
     <>
       <div className="space-y-6">
-        {/* Section 1: О компании */}
-        <Card>
-          <CardHeader>
-            <CardTitle>О компании</CardTitle>
-            <CardDescription>
-              Эти данные агент использует в разговорах с клиентами
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="agent-company-name">Название компании</Label>
-                <Input
-                  id="agent-company-name"
-                  value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="Название вашей организации"
-                  data-testid="input-agent-company-name"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-specialization">Специализация</Label>
-                <Input
-                  id="agent-specialization"
-                  value={specialization}
-                  onChange={(e) => setSpecialization(e.target.value)}
-                  placeholder="Чем занимается ваша компания"
-                  data-testid="input-agent-specialization"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-warehouse-city">Город склада</Label>
-                <Input
-                  id="agent-warehouse-city"
-                  value={warehouseCity}
-                  onChange={(e) => setWarehouseCity(e.target.value)}
-                  placeholder="Откуда отправляете товар"
-                  data-testid="input-agent-warehouse-city"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-warranty-months">Гарантия (месяцы)</Label>
-                <Input
-                  id="agent-warranty-months"
-                  type="number"
-                  value={warrantyMonths}
-                  onChange={(e) => setWarrantyMonths(e.target.value)}
-                  placeholder="12"
-                  data-testid="input-agent-warranty-months"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-warranty-km">Гарантия (км)</Label>
-                <Input
-                  id="agent-warranty-km"
-                  type="number"
-                  value={warrantyKm}
-                  onChange={(e) => setWarrantyKm(e.target.value)}
-                  placeholder="30000"
-                  data-testid="input-agent-warranty-km"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-install-days">Дней на установку</Label>
-                <Input
-                  id="agent-install-days"
-                  type="number"
-                  value={installDays}
-                  onChange={(e) => setInstallDays(e.target.value)}
-                  placeholder="14"
-                  data-testid="input-agent-install-days"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-qr-discount">Скидка при QR/СБП оплате (%)</Label>
-                <Input
-                  id="agent-qr-discount"
-                  type="number"
-                  value={qrDiscountPercent}
-                  onChange={(e) => setQrDiscountPercent(e.target.value)}
-                  placeholder="10"
-                  data-testid="input-agent-qr-discount"
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Section 1b: Диапазоны пробега */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Диапазоны пробега</CardTitle>
-            <CardDescription>
-              Определяет как разбивать варианты на категории по пробегу при двухшаговом диалоге цен
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="agent-mileage-low">Низкий пробег (до, км)</Label>
-                <Input
-                  id="agent-mileage-low"
-                  type="number"
-                  value={mileageLow}
-                  onChange={(e) => setMileageLow(e.target.value)}
-                  placeholder="60000"
-                  data-testid="input-agent-mileage-low"
-                />
-                <p className="text-xs text-muted-foreground">Лучшие варианты — дороже</p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-mileage-mid">Средний пробег (до, км)</Label>
-                <Input
-                  id="agent-mileage-mid"
-                  type="number"
-                  value={mileageMid}
-                  onChange={(e) => setMileageMid(e.target.value)}
-                  placeholder="90000"
-                  data-testid="input-agent-mileage-mid"
-                />
-                <p className="text-xs text-muted-foreground">Оптимальные варианты</p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="agent-mileage-high">Высокий пробег (от, км)</Label>
-                <Input
-                  id="agent-mileage-high"
-                  type="number"
-                  value={mileageHigh}
-                  onChange={(e) => setMileageHigh(e.target.value)}
-                  placeholder="90000"
-                  data-testid="input-agent-mileage-high"
-                />
-                <p className="text-xs text-muted-foreground">Бюджетные варианты — дешевле</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Section 2: Системный промпт */}
         <Card>
           <CardHeader>
             <CardTitle>Системный промпт</CardTitle>
@@ -3482,7 +3559,6 @@ function AgentSettingsTab() {
           </CardContent>
         </Card>
 
-        {/* Section 3: Скрипты ответов */}
         <Card>
           <CardHeader>
             <CardTitle>Скрипты ответов</CardTitle>
@@ -3492,11 +3568,11 @@ function AgentSettingsTab() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="agent-objection-payment">
+              <Label htmlFor="ai-objection-payment">
                 Ответ на «оплата при получении»
               </Label>
               <Textarea
-                id="agent-objection-payment"
+                id="ai-objection-payment"
                 value={objectionPayment}
                 onChange={(e) => setObjectionPayment(e.target.value)}
                 placeholder="Мы не частники, работаем по регламенту организации..."
@@ -3505,11 +3581,11 @@ function AgentSettingsTab() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="agent-objection-online">
-                Ответ на «онлайн оплата опасна»
+              <Label htmlFor="ai-objection-online">
+                Ответ на «онлайн платёж опасен»
               </Label>
               <Textarea
-                id="agent-objection-online"
+                id="ai-objection-online"
                 value={objectionOnline}
                 onChange={(e) => setObjectionOnline(e.target.value)}
                 placeholder="Понимаем ваши опасения. При оплате через безопасную сделку..."
@@ -3518,9 +3594,9 @@ function AgentSettingsTab() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="agent-closing-script">Скрипт закрытия сделки</Label>
+              <Label htmlFor="ai-closing-script">Скрипт закрытия сделки</Label>
               <Textarea
-                id="agent-closing-script"
+                id="ai-closing-script"
                 value={closingScript}
                 onChange={(e) => setClosingScript(e.target.value)}
                 placeholder="Для оформления заказа напишите: ФИО, телефон, email..."
@@ -3531,7 +3607,6 @@ function AgentSettingsTab() {
           </CardContent>
         </Card>
 
-        {/* Section 4: Дополнительные факты */}
         <Card>
           <CardHeader>
             <CardTitle>Дополнительные факты</CardTitle>
@@ -3540,6 +3615,9 @@ function AgentSettingsTab() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Эти факты автоматически добавляются в промпт агента
+            </p>
             {customFacts.map((fact, index) => (
               <div key={index} className="flex items-center gap-2">
                 <Input
@@ -3580,7 +3658,6 @@ function AgentSettingsTab() {
           </CardContent>
         </Card>
 
-        {/* Save button */}
         <div className="flex justify-end">
           <Button
             type="button"
@@ -3595,7 +3672,6 @@ function AgentSettingsTab() {
         </div>
       </div>
 
-      {/* Default prompt dialog */}
       <Dialog open={showDefaultPrompt} onOpenChange={setShowDefaultPrompt}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -3700,42 +3776,28 @@ export default function Settings() {
         </p>
       </div>
 
-      <Tabs defaultValue="business" className="space-y-6">
+      <Tabs defaultValue="company" className="space-y-6">
         <TabsList className="flex-wrap">
-          <TabsTrigger value="business" data-testid="tab-business">
+          <TabsTrigger value="company" data-testid="tab-company">
             <Building2 className="mr-2 h-4 w-4" />
-            Бизнес
+            Компания
           </TabsTrigger>
-          <TabsTrigger value="communication" data-testid="tab-communication">
-            <MessageSquare className="mr-2 h-4 w-4" />
-            Общение
-          </TabsTrigger>
-          <TabsTrigger value="working-hours" data-testid="tab-working-hours">
-            <Clock className="mr-2 h-4 w-4" />
-            Рабочие часы
-          </TabsTrigger>
-          <TabsTrigger value="escalation" data-testid="tab-escalation">
-            <Bell className="mr-2 h-4 w-4" />
-            Эскалация
-          </TabsTrigger>
-          <TabsTrigger value="ai-behavior" data-testid="tab-ai-behavior">
+          <TabsTrigger value="ai-agent" data-testid="tab-ai-agent">
             <Bot className="mr-2 h-4 w-4" />
-            Поведение AI
+            AI Агент
           </TabsTrigger>
-          <TabsTrigger value="templates" data-testid="tab-templates">
+          <TabsTrigger value="automation" data-testid="tab-automation">
+            <Zap className="mr-2 h-4 w-4" />
+            Автоматизация
+          </TabsTrigger>
+          <TabsTrigger value="ai-training" data-testid="tab-ai-training">
+            <MessageSquare className="mr-2 h-4 w-4" />
+            Обучение AI
+          </TabsTrigger>
+          <TabsTrigger value="templates-payment" data-testid="tab-templates-payment">
             <FileText className="mr-2 h-4 w-4" />
-            Шаблоны
+            Шаблоны и Оплата
           </TabsTrigger>
-          <TabsTrigger value="payment-methods" data-testid="tab-payment-methods">
-            <CreditCard className="mr-2 h-4 w-4" />
-            Оплата
-          </TabsTrigger>
-          {autoPartsEnabled && (
-            <TabsTrigger value="agent" data-testid="tab-agent">
-              <Bot className="mr-2 h-4 w-4" />
-              Агент
-            </TabsTrigger>
-          )}
           <TabsTrigger value="channels" data-testid="tab-channels">
             <Link2 className="mr-2 h-4 w-4" />
             Каналы
@@ -3744,310 +3806,248 @@ export default function Settings() {
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(handleSubmit)}>
-            <TabsContent value="business">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Профиль бизнеса</CardTitle>
-                  <CardDescription>
-                    Основная информация о вашем бизнесе
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Название компании</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="Название вашего магазина"
-                            {...field}
-                            data-testid="input-business-name"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="currency"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Валюта</FormLabel>
-                          <Select
-                            onValueChange={field.onChange}
-                            defaultValue={field.value}
-                          >
-                            <FormControl>
-                              <SelectTrigger data-testid="select-currency">
-                                <SelectValue placeholder="Выберите валюту" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="RUB">RUB (Российский рубль)</SelectItem>
-                              <SelectItem value="USD">USD (Доллар США)</SelectItem>
-                              <SelectItem value="EUR">EUR (Евро)</SelectItem>
-                              <SelectItem value="UAH">UAH (Украинская гривна)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="timezone"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Часовой пояс</FormLabel>
-                          <Select
-                            onValueChange={field.onChange}
-                            defaultValue={field.value}
-                          >
-                            <FormControl>
-                              <SelectTrigger data-testid="select-timezone">
-                                <SelectValue placeholder="Выберите часовой пояс" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="Europe/Moscow">Москва</SelectItem>
-                              <SelectItem value="Europe/Kiev">Киев</SelectItem>
-                              <SelectItem value="Europe/London">Лондон</SelectItem>
-                              <SelectItem value="America/New_York">Нью-Йорк</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
+            {/* Tab 1: Компания */}
+            <TabsContent value="company">
+              <div className="space-y-6">
+                <CompanyAgentCard autoPartsEnabled={autoPartsEnabled} />
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Параметры аккаунта</CardTitle>
+                    <CardDescription>
+                      Валюта и часовой пояс для вашего бизнеса
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={form.control}
+                        name="currency"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Валюта</FormLabel>
+                            <Select
+                              onValueChange={field.onChange}
+                              defaultValue={field.value}
+                            >
+                              <FormControl>
+                                <SelectTrigger data-testid="select-currency">
+                                  <SelectValue placeholder="Выберите валюту" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="RUB">RUB (Российский рубль)</SelectItem>
+                                <SelectItem value="USD">USD (Доллар США)</SelectItem>
+                                <SelectItem value="EUR">EUR (Евро)</SelectItem>
+                                <SelectItem value="UAH">UAH (Украинская гривна)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="timezone"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Часовой пояс</FormLabel>
+                            <Select
+                              onValueChange={field.onChange}
+                              defaultValue={field.value}
+                            >
+                              <FormControl>
+                                <SelectTrigger data-testid="select-timezone">
+                                  <SelectValue placeholder="Выберите часовой пояс" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="Europe/Moscow">Москва</SelectItem>
+                                <SelectItem value="Europe/Kiev">Киев</SelectItem>
+                                <SelectItem value="Europe/London">Лондон</SelectItem>
+                                <SelectItem value="America/New_York">Нью-Йорк</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div className="flex justify-end">
+                  <Button
+                    type="submit"
+                    disabled={updateMutation.isPending}
+                    data-testid="button-save-settings"
+                  >
+                    <Save className="mr-2 h-4 w-4" />
+                    Сохранить
+                  </Button>
+                </div>
+              </div>
             </TabsContent>
 
-            <TabsContent value="communication">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Стиль общения</CardTitle>
-                  <CardDescription>
-                    Как AI должен общаться с клиентами
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="language"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Язык</FormLabel>
-                        <Select
-                          onValueChange={field.onChange}
-                          defaultValue={field.value}
-                        >
-                          <FormControl>
-                            <SelectTrigger data-testid="select-language">
-                              <SelectValue placeholder="Выберите язык" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="ru">Русский</SelectItem>
-                            <SelectItem value="en">Английский</SelectItem>
-                            <SelectItem value="uk">Украинский</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="tone"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Тон общения</FormLabel>
-                          <Select
-                            onValueChange={field.onChange}
-                            defaultValue={field.value}
-                          >
-                            <FormControl>
-                              <SelectTrigger data-testid="select-tone">
-                                <SelectValue placeholder="Выберите тон" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="formal">Формальный</SelectItem>
-                              <SelectItem value="friendly">Дружеский</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="addressStyle"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Обращение</FormLabel>
-                          <Select
-                            onValueChange={field.onChange}
-                            defaultValue={field.value}
-                          >
-                            <FormControl>
-                              <SelectTrigger data-testid="select-address-style">
-                                <SelectValue placeholder="Выберите стиль" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="vy">На Вы</SelectItem>
-                              <SelectItem value="ty">На Ты</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="working-hours">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Рабочие часы</CardTitle>
-                  <CardDescription>
-                    Когда AI должен отвечать автоматически
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField
-                      control={form.control}
-                      name="workingHoursStart"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Начало работы</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="time"
-                              {...field}
-                              data-testid="input-working-start"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="workingHoursEnd"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Конец работы</FormLabel>
-                          <FormControl>
-                            <Input
-                              type="time"
-                              {...field}
-                              data-testid="input-working-end"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                  <Separator />
-                  <FormField
-                    control={form.control}
-                    name="autoReplyOutsideHours"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center justify-between rounded-md border p-4">
-                        <div>
-                          <FormLabel>Автоответ в нерабочее время</FormLabel>
-                          <FormDescription>
-                            Отправлять автоматические сообщения вне рабочих часов
-                          </FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                            data-testid="switch-auto-reply"
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="escalation">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Настройки эскалации</CardTitle>
-                  <CardDescription>
-                    Куда отправлять уведомления об эскалациях
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="escalationEmail"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Email для эскалаций</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="email"
-                            placeholder="owner@example.com"
-                            {...field}
-                            data-testid="input-escalation-email"
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          Получать email-уведомления об эскалированных разговорах
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="escalationTelegram"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Telegram для эскалаций</FormLabel>
-                        <FormControl>
-                          <Input
-                            placeholder="@username или ID чата"
-                            {...field}
-                            data-testid="input-escalation-telegram"
-                          />
-                        </FormControl>
-                        <FormDescription>
-                          Получать Telegram-уведомления об эскалированных разговорах
-                        </FormDescription>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="ai-behavior">
+            {/* Tab 2: AI Агент */}
+            <TabsContent value="ai-agent">
               <div className="space-y-6">
                 <Card>
                   <CardHeader>
-                    <CardTitle>Поведение AI</CardTitle>
+                    <CardTitle>Стиль общения</CardTitle>
                     <CardDescription>
-                      Настройка обработки специальных запросов
+                      Как AI должен общаться с клиентами
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <FormField
+                      control={form.control}
+                      name="language"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Язык</FormLabel>
+                          <Select
+                            onValueChange={field.onChange}
+                            defaultValue={field.value}
+                          >
+                            <FormControl>
+                              <SelectTrigger data-testid="select-language">
+                                <SelectValue placeholder="Выберите язык" />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value="ru">Русский</SelectItem>
+                              <SelectItem value="en">Английский</SelectItem>
+                              <SelectItem value="uk">Украинский</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={form.control}
+                        name="tone"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Тон общения</FormLabel>
+                            <Select
+                              onValueChange={field.onChange}
+                              defaultValue={field.value}
+                            >
+                              <FormControl>
+                                <SelectTrigger data-testid="select-tone">
+                                  <SelectValue placeholder="Выберите тон" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="formal">Формальный</SelectItem>
+                                <SelectItem value="friendly">Дружеский</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="addressStyle"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Обращение</FormLabel>
+                            <Select
+                              onValueChange={field.onChange}
+                              defaultValue={field.value}
+                            >
+                              <FormControl>
+                                <SelectTrigger data-testid="select-address-style">
+                                  <SelectValue placeholder="Выберите стиль" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="vy">На Вы</SelectItem>
+                                <SelectItem value="ty">На Ты</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        type="submit"
+                        disabled={updateMutation.isPending}
+                        data-testid="button-save-communication"
+                      >
+                        <Save className="mr-2 h-4 w-4" />
+                        Сохранить стиль
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <AIAgentSettingsCard />
+              </div>
+            </TabsContent>
+
+            {/* Tab 3: Автоматизация */}
+            <TabsContent value="automation">
+              <div className="space-y-6">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Рабочие часы</CardTitle>
+                    <CardDescription>
+                      Когда AI работает в автоматическом режиме
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        control={form.control}
+                        name="workingHoursStart"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Начало работы</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="time"
+                                {...field}
+                                data-testid="input-working-start"
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="workingHoursEnd"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Конец работы</FormLabel>
+                            <FormControl>
+                              <Input
+                                type="time"
+                                {...field}
+                                data-testid="input-working-end"
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Скидки</CardTitle>
+                    <CardDescription>
+                      Разрешить AI предлагать скидки клиентам
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -4096,46 +4096,48 @@ export default function Settings() {
                         )}
                       />
                     )}
+
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        type="submit"
+                        disabled={updateMutation.isPending}
+                        data-testid="button-save-automation"
+                      >
+                        <Save className="mr-2 h-4 w-4" />
+                        Сохранить
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
 
-                {/* Phase 1: Decision Engine Settings */}
-                <DecisionEngineSettings />
-
-                {/* Phase 2: Human Delay Settings */}
+                <DecisionEngineSettings autoPartsEnabled={autoPartsEnabled} />
                 <HumanDelaySettings />
-
-                {/* Training Policies */}
-                <TrainingPoliciesSettings />
               </div>
             </TabsContent>
 
-            <TabsContent value="templates">
-              <TemplatesTab />
+            {/* Tab 4: Обучение AI */}
+            <TabsContent value="ai-training">
+              <div className="space-y-6">
+                <p className="text-sm text-muted-foreground">
+                  Эти настройки влияют на качество AI со временем — как агент обучается на реальных разговорах
+                </p>
+                <TrainingPoliciesSettings autoPartsEnabled={autoPartsEnabled} />
+              </div>
             </TabsContent>
 
-            <TabsContent value="payment-methods">
-              <PaymentMethodsTab />
+            {/* Tab 5: Шаблоны и Оплата */}
+            <TabsContent value="templates-payment">
+              <div className="space-y-8">
+                <TemplatesTab />
+                <Separator />
+                <PaymentMethodsTab />
+              </div>
             </TabsContent>
 
-            <TabsContent value="agent">
-              <AgentSettingsTab />
-            </TabsContent>
-
+            {/* Tab 6: Каналы */}
             <TabsContent value="channels">
               <ChannelSettings />
             </TabsContent>
-
-            <div className="flex justify-end pt-6">
-              <Button
-                type="submit"
-                disabled={updateMutation.isPending}
-                data-testid="button-save-settings"
-              >
-                <Save className="mr-2 h-4 w-4" />
-                Сохранить настройки
-              </Button>
-            </div>
           </form>
         </Form>
       </Tabs>

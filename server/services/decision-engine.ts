@@ -76,7 +76,16 @@ function buildSystemPrompt(
     ? "СКРИПТЫ ОТВЕТОВ:\n" + scripts.join("\n\n")
     : "";
 
-  return [base, factsBlock, scriptsBlock].filter(Boolean).join("\n\n");
+  const customFactsRaw = agentSettings?.customFacts as Record<string, string> | null | undefined;
+  const customFactsBlock =
+    customFactsRaw && Object.keys(customFactsRaw).length > 0
+      ? "ДОПОЛНИТЕЛЬНЫЕ ФАКТЫ О КОМПАНИИ:\n" +
+        Object.entries(customFactsRaw)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join("\n")
+      : "";
+
+  return [base, factsBlock, scriptsBlock, customFactsBlock].filter(Boolean).join("\n\n");
 }
 
 const CONFIDENCE_WEIGHTS = {
