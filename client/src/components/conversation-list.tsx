@@ -151,7 +151,7 @@ export function ConversationList({
                     )}
                   />
                 </div>
-                <div className="flex-1 overflow-hidden">
+                <div className="flex-1 min-w-0 overflow-hidden">
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-sm font-medium">
                       {conversation.customer?.name || "Неизвестный клиент"}
