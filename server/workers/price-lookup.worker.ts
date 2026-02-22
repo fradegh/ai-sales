@@ -442,13 +442,32 @@ async function lookupPricesByOem(
     );
   }
 
+  // Fix 3: fallback display name if GPT returned an internal catalog code
+  const vehicleDesc =
+    vehicleContext?.make && vehicleContext?.model
+      ? `${vehicleContext.make} ${vehicleContext.model}`
+      : null;
+  const effectiveDisplayName: string | null = isValidTransmissionModel(identification.modelName)
+    ? identification.modelName
+    : vehicleDesc
+      ? `${vehicleDesc} АКПП`
+      : null;
+
+  if (!isValidTransmissionModel(identification.modelName) && effectiveDisplayName) {
+    console.log(
+      `[PriceLookupWorker] modelName "${identification.modelName}" looks like internal code — ` +
+        `using display name "${effectiveDisplayName}"`
+    );
+  }
+
   // 3. Search real prices via OpenAI Web Search
   console.log(`[PriceLookupWorker] Searching prices for OEM "${oem}"`);
   const priceData = await searchUsedTransmissionPrice(
     oem,
     identification.modelName,
     identification.origin,
-    identification.manufacturer
+    identification.manufacturer,
+    vehicleContext
   );
 
   // Do NOT save mock results — only save real search results (including not_found)
@@ -461,7 +480,7 @@ async function lookupPricesByOem(
       if (aiEstimate) {
         const { priceMin, priceMax } = aiEstimate;
         const avgPrice = Math.round((priceMin + priceMax) / 2);
-        const displayName = identification.modelName ?? oem;
+        const displayName = effectiveDisplayName ?? oem;
         const suggestedReply =
           `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
           `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
@@ -473,7 +492,7 @@ async function lookupPricesByOem(
           maxPrice: priceMax,
           avgPrice,
           currency: "RUB",
-          modelName: identification.modelName,
+          modelName: effectiveDisplayName ?? identification.modelName,
           manufacturer: identification.manufacturer,
           origin: identification.origin,
           expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -501,7 +520,7 @@ async function lookupPricesByOem(
       maxPrice: priceData.maxPrice,
       avgPrice: priceData.avgPrice,
       currency: "RUB",
-      modelName: identification.modelName,
+      modelName: effectiveDisplayName ?? identification.modelName,
       manufacturer: identification.manufacturer,
       origin: identification.origin,
       mileageMin: priceData.mileageMin,

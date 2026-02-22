@@ -1,4 +1,5 @@
 import { openai } from "./decision-engine";
+import type { VehicleContext } from "./transmission-identifier";
 
 export interface PriceSearchListing {
   title: string;
@@ -57,8 +58,21 @@ function buildPrimaryQuery(
   oem: string,
   modelName: string | null,
   origin: Origin,
-  make?: string | null
+  make?: string | null,
+  vehicleDesc?: string | null
 ): string {
+  // When vehicle make+model is known, use OEM + vehicle desc for reliable results
+  // (avoids internal catalog codes that produce no search hits)
+  if (vehicleDesc) {
+    switch (origin) {
+      case "japan":
+        return `контрактная АКПП ${vehicleDesc} ${oem} б/у из Японии`;
+      case "europe":
+        return `контрактная АКПП ${vehicleDesc} ${oem} б/у из Европы`;
+      default:
+        return `контрактная АКПП ${vehicleDesc} ${oem}`;
+    }
+  }
   const gearboxCode = stripParenthetical(modelName ?? oem);
   const makePart = make ? `${make} ` : "";
   switch (origin) {
@@ -71,7 +85,15 @@ function buildPrimaryQuery(
   }
 }
 
-function buildFallbackQuery(oem: string, modelName: string | null, make?: string | null): string {
+function buildFallbackQuery(
+  oem: string,
+  modelName: string | null,
+  make?: string | null,
+  vehicleDesc?: string | null
+): string {
+  if (vehicleDesc) {
+    return `контрактная АКПП ${vehicleDesc} ${oem} цена купить`;
+  }
   const gearboxCode = stripParenthetical(modelName ?? oem);
   const makePart = make ? `${make} ` : "";
   return `контрактная АКПП ${makePart}${gearboxCode} цена купить`;
@@ -185,10 +207,16 @@ export async function searchUsedTransmissionPrice(
   oem: string,
   modelName: string | null,
   origin: Origin,
-  make?: string | null
+  make?: string | null,
+  vehicleContext?: VehicleContext | null
 ): Promise<PriceSearchResult> {
-  const primaryQuery = buildPrimaryQuery(oem, modelName, origin, make);
-  const fallbackQuery = buildFallbackQuery(oem, modelName, make);
+  const vehicleDesc =
+    vehicleContext?.make && vehicleContext?.model
+      ? `${vehicleContext.make} ${vehicleContext.model}`
+      : null;
+
+  const primaryQuery = buildPrimaryQuery(oem, modelName, origin, make, vehicleDesc);
+  const fallbackQuery = buildFallbackQuery(oem, modelName, make, vehicleDesc);
 
   const notFoundResult: PriceSearchResult = {
     minPrice: 0,

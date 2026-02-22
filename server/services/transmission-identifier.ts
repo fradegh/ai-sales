@@ -22,6 +22,9 @@ export interface TransmissionIdentification {
 const SYSTEM_PROMPT =
   "You are an automotive transmission expert. " +
   "Given an OEM/part number, identify the exact transmission model. " +
+  "Return the modelName as the market/commercial name used in Russian контрактные АКПП listings " +
+  "(e.g. 'F4A42', 'U660E', 'A4CF1', 'AW55-51SN') — NOT internal catalog codes or part numbers. " +
+  "If unsure of the exact model, return the most likely market model name for this vehicle. " +
   "Respond ONLY in valid JSON, no markdown.";
 
 const FALLBACK_RESULT: TransmissionIdentification = {
@@ -55,9 +58,15 @@ export async function identifyTransmissionByOem(
     if (context?.gearboxModelHint) contextLines.push(`Gearbox model hint from catalog: ${context.gearboxModelHint}`);
     if (context?.factoryCode) contextLines.push(`Factory code: ${context.factoryCode}`);
 
+    const marketNameNote =
+      contextLines.length > 0
+        ? "Return modelName as it appears in Russian контрактные АКПП listings (e.g. 'F4A42', 'U660E') — NOT internal catalog or part numbers.\n"
+        : "";
+
     const userPrompt =
       `OEM code: ${oem}.\n` +
       (contextLines.length > 0 ? contextLines.join("\n") + "\n" : "") +
+      marketNameNote +
       `Identify: modelName, manufacturer, origin, confidence, notes.`;
 
     const response = await openai.chat.completions.create({

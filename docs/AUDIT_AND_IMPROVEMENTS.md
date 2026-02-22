@@ -2,7 +2,7 @@
 
 **Auditor:** Senior Tech Lead (automated deep audit)
 **Initial Audit:** 2026-02-20
-**Last Updated:** 2026-02-22
+**Last Updated:** 2026-02-23
 **Scope:** Full codebase — server, client, shared, Python services, config, migrations, docs
 **Codebase:** AI Sales Operator — B2B SaaS for AI-powered customer support automation
 
@@ -738,5 +738,25 @@ The following significant features exist in code but are not documented in any f
 
 ---
 
-*End of audit. Initial audit: 2026-02-20. Updated: 2026-02-22.*
+## Section 12: Fixes Applied 2026-02-23 (Search Strategy & Display Name)
+
+| # | Fix | File(s) | Lines | Description |
+|---|-----|---------|-------|-------------|
+| FIX-05 | `isValidTransmissionModel` filter for internal OEM catalog codes | `server/workers/price-lookup.worker.ts` | ~375–384, ~423–435 | Added `isValidTransmissionModel(model)` predicate. Rejects codes longer than 12 characters or containing 4+ consecutive digits (e.g. `M3MHD987579` has `987579` — 6 consecutive digits). Accepts standard market codes: letter-only (`QCE`), digit-first (`09G`), hyphenated (`AW55-51SN`), parenthesised (`QCE(6A)`), and mixed alphanumeric (`F4A42`, `U660E`, `DQ250`). When `oemModelHint` from vehicle lookup passes validation it is used directly (GPT identification skipped). When it fails, the hint is discarded with a log line and GPT identification runs instead. |
+| FIX-06 | GPT prompt updated to return market/commercial name | `server/services/transmission-identifier.ts` | ~22–28, ~61–70 | **System prompt** extended with: `"Return the modelName as the market/commercial name used in Russian контрактные АКПП listings (e.g. 'F4A42', 'U660E', 'A4CF1', 'AW55-51SN') — NOT internal catalog codes or part numbers. If unsure of the exact model, return the most likely market model name for this vehicle."` **User prompt** gains an extra reinforcement line `"Return modelName as it appears in Russian контрактные АКПП listings … — NOT internal catalog or part numbers."` injected only when `vehicleContext` fields are present, i.e. when there is enough vehicle data to make the instruction actionable. |
+| FIX-07 | Dual search strategy — OEM+vehicle path when vehicleContext is present | `server/services/price-searcher.ts`, `server/workers/price-lookup.worker.ts` | price-searcher: ~57–100, ~192–207; worker: ~465–471 | **`price-searcher.ts`**: Added `import type { VehicleContext }` and a fifth parameter `vehicleContext?: VehicleContext \| null` to `searchUsedTransmissionPrice`. Computes `vehicleDesc = "${make} ${model}"` from context. `buildPrimaryQuery` gains a `vehicleDesc?` parameter — when set, returns `контрактная АКПП ${vehicleDesc} ${oem} [б/у из Японии\|Европы]`, using the raw OEM code and vehicle name instead of the (possibly unreliable) `modelName`. `buildFallbackQuery` similarly returns `контрактная АКПП ${vehicleDesc} ${oem} цена купить` when `vehicleDesc` is available. The existing model-name path is unchanged and used as fallback when `vehicleContext` is absent. **`price-lookup.worker.ts`**: `searchUsedTransmissionPrice` call now passes `vehicleContext` as the fifth argument. |
+| FIX-08 | `effectiveDisplayName` fallback when modelName is an internal code | `server/workers/price-lookup.worker.ts` | ~445–461, ~483, ~495, ~523 | After `identification` is resolved (both fast-path and GPT path), `effectiveDisplayName` is computed: if `identification.modelName` passes `isValidTransmissionModel` it is used as-is; otherwise, if `vehicleContext` has `make` + `model`, the fallback is `"${make} ${model} АКПП"` (e.g. `"HYUNDAI ELANTRA АКПП"`); otherwise `null`. A warning log is emitted when the fallback activates. All three downstream display sites now use `effectiveDisplayName`: (1) AI-estimate suggestion text (line ~483), (2) `modelName` field in the AI-estimate snapshot (line ~495), (3) `modelName` field in the web-search snapshot (line ~523) — ensuring `createPriceSuggestions` and the cached-result path never render an internal code to the customer. |
+| FIX-09 | VIN/FRAME label in templates reflects detection type | `server/services/gearbox-templates.ts`, `server/services/inbound-message-handler.ts` | gearbox-templates: template strings; inbound-handler: detection-type pass-through | Templates previously always read "VIN/номер кузова" regardless of what was actually detected. Detection type (`"VIN"` or `"FRAME"`) is now passed from `inbound-message-handler.ts` into the template layer. The `gearboxLookupFound` and `gearboxLookupModelOnly` templates use the appropriate label: `"VIN-коду"` when detection type is `VIN`, `"номеру кузова"` when it is `FRAME`. |
+| FIX-10 | Removed `{{source}}` placeholder from customer-facing templates | `server/services/gearbox-templates.ts` | template strings | `gearboxLookupFound` and `gearboxLookupModelOnly` templates previously included a `{{source}}` placeholder that rendered as `"Источник: podzamenu"` in suggestions shown to customers — exposing an internal service name. The `{{source}}` placeholder and its surrounding text have been removed from both templates. Tenant overrides that do not contain `{{source}}` are unaffected. |
+
+### Impact
+
+- Internal Podzamenu catalog codes (e.g. `M3MHD987579`) are now reliably rejected before they reach the GPT identification prompt or the web search query.
+- GPT is explicitly instructed to return market-tradeable codes (`F4A42`, `U660E`, etc.) — validated by a post-identification guard.
+- Web search queries now use the car make/model + raw OEM number when vehicle context is available, producing consistently findable results on Russian used-parts marketplaces even when the transmission model name is uncertain.
+- Customers never see internal catalog codes or data-source names in suggestion text.
+
+---
+
+*End of audit. Initial audit: 2026-02-20. Updated: 2026-02-23.*
 *All 9 critical issues from initial audit have been fixed.*
