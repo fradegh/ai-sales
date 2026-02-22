@@ -8,6 +8,7 @@ import { identifyTransmissionByOem } from "../services/transmission-identifier";
 import { searchUsedTransmissionPrice } from "../services/price-searcher";
 import { renderTemplate, DEFAULT_TEMPLATES } from "../services/template-renderer";
 import type { PriceSnapshot, TenantAgentSettings } from "@shared/schema";
+import { openai } from "../services/decision-engine";
 
 const QUEUE_NAME = "price_lookup_queue";
 
@@ -316,6 +317,54 @@ async function createPriceSuggestion(
   console.log(`[PriceLookupWorker] Created price suggestion ${suggestion.id}`);
 }
 
+// ─── AI price estimate fallback ───────────────────────────────────────────────
+
+interface AiPriceEstimate {
+  priceMin: number;
+  priceMax: number;
+}
+
+async function estimatePriceFromAI(
+  oem: string,
+  identification: { modelName: string | null; manufacturer: string | null }
+): Promise<AiPriceEstimate | null> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "user",
+          content:
+            `You are an expert in the used auto parts market in Russia (drom.ru, avito.ru, farpost.ru).\n` +
+            `Give approximate market prices for a used контрактная transmission with OEM code "${oem}" ` +
+            `(${identification.modelName ?? oem}, manufacturer: ${identification.manufacturer ?? "unknown"}).\n` +
+            `Respond ONLY with valid JSON, no markdown:\n` +
+            `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
+            `If uncertain, give a wider range. Always return numbers.`,
+        },
+      ],
+      max_tokens: 100,
+    });
+
+    const text = response.choices[0]?.message?.content?.trim() ?? "";
+    const parsed = JSON.parse(text) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>).priceMin === "number" &&
+      typeof (parsed as Record<string, unknown>).priceMax === "number"
+    ) {
+      return {
+        priceMin: (parsed as Record<string, number>).priceMin,
+        priceMax: (parsed as Record<string, number>).priceMax,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── OEM lookup flow (new global cache + AI search) ──────────────────────────
 
 async function lookupPricesByOem(
@@ -356,8 +405,41 @@ async function lookupPricesByOem(
 
   // Do NOT save mock results — only save real search results (including not_found)
   if (priceData.source === "openai_web_search" || priceData.source === "not_found") {
-    // For not_found, use 24h TTL so we don't re-search constantly
     const isNotFound = priceData.source === "not_found";
+
+    // AI price estimate fallback when web search returns 0 listings
+    if (isNotFound) {
+      const aiEstimate = await estimatePriceFromAI(oem, identification);
+      if (aiEstimate) {
+        const { priceMin, priceMax } = aiEstimate;
+        const avgPrice = Math.round((priceMin + priceMax) / 2);
+        const suggestedReply =
+          `Контрактные КПП ${oem} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+          `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
+        const aiSnapshot = await storage.createPriceSnapshot({
+          tenantId: null,
+          oem,
+          source: "ai_estimate",
+          minPrice: priceMin,
+          maxPrice: priceMax,
+          avgPrice,
+          currency: "RUB",
+          modelName: identification.modelName,
+          manufacturer: identification.manufacturer,
+          origin: identification.origin,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          raw: { priceMin, priceMax, identification } as any,
+          searchKey: oem,
+        });
+        console.log(`[PriceLookupWorker] AI estimate snapshot ${aiSnapshot.id} for OEM "${oem}" (${priceMin}–${priceMax} RUB)`);
+        await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.5);
+        await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
+        return;
+      }
+      // AI call failed or returned invalid JSON — fall through to existing not_found behavior
+    }
+
+    // For not_found, use 24h TTL so we don't re-search constantly
     const ttlMs = isNotFound ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
     const expiresAt = new Date(Date.now() + ttlMs);
 

@@ -1,9 +1,29 @@
 # Codebase Audit & Improvement Plan
 
 **Auditor:** Senior Tech Lead (automated deep audit)
-**Date:** 2026-02-20
+**Initial Audit:** 2026-02-20
+**Last Updated:** 2026-02-22
 **Scope:** Full codebase — server, client, shared, Python services, config, migrations, docs
 **Codebase:** AI Sales Operator — B2B SaaS for AI-powered customer support automation
+
+---
+
+## Audit Summary (2026-02-22)
+
+**All 9 CRIT issues from the initial audit are fixed.** Most DEBT and ARCH items are also resolved. The system is significantly more robust and secure. Key new findings from the February 22 audit are documented in Section 9 below.
+
+### Current Status Overview
+
+| Category | Total | ✅ Fixed | ⚠️ Partial | ❌ Not Done |
+|----------|-------|---------|-----------|------------|
+| Critical | 9 | 9 | 0 | 0 |
+| Technical Debt | 13 | 9 | 0 | 4 |
+| Architecture | 6 | 5 | 0 | 1 |
+| Security | ~10 | 6 | 2 | 2 |
+| Performance | ~10 | 7 | 1 | 2 |
+| New Findings (2026-02-22) | 8 | 0 | 2 | 6 |
+
+---
 
 ---
 
@@ -594,5 +614,111 @@ The following significant features exist in code but are not documented in any f
 
 ---
 
-*End of audit. Total critical issues: 9. Total items identified: 60+.*
-*Estimated effort for Sprint 1 (critical fixes): 1–2 developer-days.*
+---
+
+## Section 9: New Findings (2026-02-22 Audit)
+
+### NEW-01: `AUTO_PARTS_ENABLED` feature flag undocumented
+
+- **File:** `server/services/inbound-message-handler.ts`
+- **Problem:** The flag `AUTO_PARTS_ENABLED` is checked in `processIncomingMessageFull()` to gate the entire VIN/FRAME detection + vehicle lookup pipeline. However, it is NOT listed in `feature_flags.json` (which has only 12 flags). When the flag is absent, `featureFlagService.isEnabled()` returns `false`, so the pipeline is silently disabled by default.
+- **Impact:** Teams enabling vehicle lookup need to explicitly add this flag to `feature_flags.json` or toggle it in the DB via the admin panel.
+- **Recommendation:** Add `AUTO_PARTS_ENABLED: false` to `feature_flags.json` with documentation. Or check if this is intentionally controlled only via DB admin panel.
+- **Priority:** Medium
+
+### NEW-02: `auth-service.ts` — password reset does not invalidate sessions
+
+- **File:** `server/services/auth-service.ts`
+- **Problem:** There is a TODO comment: "All existing sessions should be invalidated (TODO: implement session store)". When a user resets their password, existing sessions from before the reset remain valid. An attacker who stole a session cookie retains access even after the victim changes their password.
+- **Recommendation:** On password reset, delete all sessions for the user from the `sessions` table using `DELETE FROM sessions WHERE sess->>'userId' = :userId`.
+- **Priority:** High
+
+### NEW-03: MAX Personal uses GREEN-API but documentation was outdated
+
+- **Status:** ✅ Documentation now updated (this audit)
+- **Files:** `server/services/max-green-api-adapter.ts`, `server/routes.ts`, `max_personal_accounts` table
+- **Discovery:** MAX Personal channel was completely re-architected from Playwright-based to GREEN-API HTTP-based integration. This is now documented in `docs/API_REFERENCE.md`, `docs/DATABASE_SCHEMA.md`, and `.cursorrules`.
+
+### NEW-04: `price_settings` stored in `tenants.templates` JSONB — no dedicated table
+
+- **Status:** ✅ Documentation now updated (this audit)
+- **File:** `server/routes/vehicle-lookup.routes.ts`
+- **Discovery:** `GET/PUT /api/price-settings` read/write from `tenants.templates.priceSettings` JSONB key. There is no separate DB table. Default: `{ marginPct: -25, roundTo: 100, priceNote: "", showMarketPrice: false }`.
+
+### NEW-05: `ecosystem.config.cjs` has 3 PM2 apps, not 2
+
+- **Status:** ✅ Documentation now updated (this audit)
+- **Discovery:** PM2 ecosystem now has: `aisales` (main app), `worker-price-lookup`, and `podzamenu-service` (Python Podzamenu lookup at port 8200). The vehicle lookup Python service is both spawned as a child process from `server/index.ts` AND configured as a PM2 process — the PM2 configuration is the canonical production approach.
+
+### NEW-06: Dockerfile does not exist
+
+- **Status:** ✅ Documentation updated (this audit)
+- **Discovery:** `Dockerfile` referenced in documentation does not exist in the repository. Railway deployment uses Nixpacks (`nixpacks.toml`). Docker deployment is not actually provided.
+- **Recommendation:** Either create a `Dockerfile` or remove all references from docs. Currently Nixpacks is the only supported container deployment path.
+
+### NEW-07: Migration count out of sync with docs
+
+- **Status:** ✅ Documentation now updated (this audit)
+- **Discovery:** There are 16 numbered migration files (0000–0015) plus 1 manual file. Previous docs stated 0000–0012. New migrations 0013–0015 added `feature_flags` composite unique indexes and `max_personal_accounts` table (single then multi-account).
+
+### NEW-08: `settings.tsx` grew to 4,151 lines
+
+- **File:** `client/src/pages/settings.tsx`
+- **Problem:** The settings page is now 4,151 lines (previously estimated ~3000). This makes it the largest file in the codebase by a significant margin.
+- **Impact:** Code review difficulty, poor maintainability. Contains 6 distinct tabs (Company, AI Agent, Automation, AI Training, Templates & Payment, Channels).
+- **Recommendation:** Extract each tab into its own component under `client/src/components/settings/`. This was DEBT-11 — still not resolved, and the file has grown larger.
+- **Priority:** Medium
+
+---
+
+## Remaining Open Issues (as of 2026-02-22)
+
+### Still Pending from Previous Audit
+
+| ID | Description | Priority |
+|----|-------------|----------|
+| DEBT-05 | 100+ `as any` casts — extend Express Request type | Medium |
+| DEBT-07 | Email provider only logs to console — no real sending | Medium |
+| DEBT-09 | Hardcoded business values (50 USDT, 72h trial, etc.) | Low |
+| DEBT-10 | `deleteProduct` always returns `true` | Low |
+| DEBT-11 | `settings.tsx` is 4,151 lines — extract tab components | Medium |
+| ARCH-06 | No service layer between routes and storage | Low |
+| 4.2 | LIKE pattern injection in search (`%` and `_` unescaped) | Medium |
+| 4.2 | WebSocket messages not schema-validated | Medium |
+| 4.4 | No WebSocket connection/message rate limit | Medium |
+| 4.5 | No explicit CORS configuration | Low |
+| 4.6 | Telegram FloodWait in reconnect loop not handled | High |
+| 4.6 | Telegram `authStates` Map has no TTL — leaks connections | High |
+| 5.2 | Missing caching (tenant settings, customer memory) | Low |
+| 5.3 | Cosine similarity in JS — should use pgvector | Medium |
+| 5.3 | Full response body logging on all API calls | Low |
+| 5.6 | Missing composite indexes on `(tenantId, status)` for conversations | Low |
+| 5.6 | `getAllRagChunksWithEmbedding` — full table scan at scale | Medium |
+| Testing | No frontend tests | Low |
+| Testing | No WebSocket auth tests | High |
+| Testing | No multi-tenancy cross-tenant access tests | High |
+
+### New Issues (from 2026-02-22 Audit)
+
+| ID | Description | Priority |
+|----|-------------|----------|
+| NEW-01 | `AUTO_PARTS_ENABLED` flag not in `feature_flags.json` | Medium |
+| NEW-02 | Password reset doesn't invalidate existing sessions | High |
+| NEW-06 | Dockerfile doesn't exist but is referenced in docs | Low |
+| NEW-08 | `settings.tsx` now 4,151 lines (DEBT-11 got worse) | Medium |
+
+---
+
+## Section 10: Fixes Applied 2026-02-22 (Message Routing)
+
+| # | Fix | File(s) | Lines | Description |
+|---|-----|---------|-------|-------------|
+| FIX-01 | Double suggestions bug — VIN/FRAME branch hard stop | `server/services/inbound-message-handler.ts` | ~462 | Added `return;` at the end of the `if (vehicleDet && !isIncompleteVin)` block in `processIncomingMessageFull`. Previously, after enqueueing vehicle lookup and creating the `gearbox_tag_request` suggestion, execution fell through to `triggerAiSuggestion()`, producing a second AI suggestion for the same message. Now the VIN/FRAME branch is a hard stop — no AI suggestion is created when a VIN or FRAME is detected. Covers both the new-case and duplicate-case paths. |
+| FIX-02 | Double suggestions bug — gearbox_type branch hard stop | `server/services/inbound-message-handler.ts` | ~514 | Added `return;` at the end of the `if (mentionedGearboxType !== "unknown")` block. Previously, after creating the `gearbox_no_vin` suggestion (or skipping creation if one already existed), execution fell through to `triggerAiSuggestion()`. Now when a gearbox type is detected, the branch is a hard stop — `triggerAiSuggestion()` is never reached. |
+| FIX-03 | Updated `gearboxNoVin` template text | `server/services/gearbox-templates.ts` | ~16 | Replaced the old VIN-only prompt ("Для точного подбора …") with a new template that asks for gearbox marking OR VIN: "Здравствуйте! Чтобы сразу посчитать цену, нужна маркировка коробки (на шильдике КПП) или VIN. Что можете прислать?" The new text no longer uses the `{{gearboxType}}` placeholder. Tenant overrides in `tenants.templates.gearboxNoVin` take precedence as before. |
+| FIX-04 | AI price estimate fallback in PriceLookupWorker | `server/workers/price-lookup.worker.ts` | ~320–438 | When `searchUsedTransmissionPrice` returns `source: "not_found"` (0 valid listings), the worker now calls `estimatePriceFromAI(oem, identification)` using the existing `openai` client (imported from `../services/decision-engine`). The GPT-4o-mini prompt asks for a RUB price range for the given OEM/model on the Russian used-parts market. If AI returns valid `{priceMin, priceMax}`, a snapshot with `source: "ai_estimate"` and a customer-facing reply is created (confidence: 0.5); the reply text does not mention AI or the price source. If the AI call throws or returns malformed JSON, the function silently returns `null` and the existing `not_found` behavior continues. |
+
+---
+
+*End of audit. Initial audit: 2026-02-20. Updated: 2026-02-22.*
+*All 9 critical issues from initial audit have been fixed.*

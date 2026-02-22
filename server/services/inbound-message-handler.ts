@@ -459,6 +459,7 @@ export async function processIncomingMessageFull(
           console.log(`[InboundHandler] Created gearbox_tag_request suggestion for vehicle lookup case ${row.id}`);
         }
       }
+      return;
     }
 
     // If no VIN/FRAME detected, try to detect a gearbox OEM marking (e.g. A245E, K9K, 01M)
@@ -510,6 +511,7 @@ export async function processIncomingMessageFull(
             console.log(`[InboundHandler] Gearbox type "${mentionedGearboxType}" without VIN, created gearbox_no_vin suggestion`);
           }
         }
+        return;
       }
     }
 

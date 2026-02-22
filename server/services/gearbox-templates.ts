@@ -13,7 +13,7 @@ export const DEFAULT_GEARBOX_TEMPLATES = {
   gearboxLookupFallback:
     "По VIN коробка передач {{gearboxType}} в каталоге не отображается.\nИщу варианты {{gearboxType}} {{make}} {{model}} на основе вашего запроса.\nЕсли есть фото шильдика/маркировки КПП — пришлите, это поможет точнее подобрать.",
   gearboxNoVin:
-    "Для точного подбора {{gearboxType}} пришлите, пожалуйста, VIN-номер (17 символов) или номер кузова (FRAME).\nVIN обычно указан в свидетельстве о регистрации (СТС) или на табличке под лобовым стеклом.",
+    "Здравствуйте! Чтобы сразу посчитать цену, нужна маркировка коробки (на шильдике КПП) или VIN. Что можете прислать?",
 } as const;
 
 export type GearboxTemplateKey = keyof typeof DEFAULT_GEARBOX_TEMPLATES;
