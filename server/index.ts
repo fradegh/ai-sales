@@ -25,7 +25,6 @@ import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
 import { featureFlagService } from "./services/feature-flags";
 
-let maxPersonalProcess: ChildProcess | null = null;
 let podzamenuProcess: ChildProcess | null = null;
 let vehicleLookupWorker: Worker | null = null;
 let priceLookupWorker: Worker | null = null;
@@ -170,9 +169,6 @@ app.use((req, res, next) => {
         log(`Telegram Personal initialization failed: ${err.message}`, "startup");
       }
       
-      // Auto-start Max Personal Python service
-      startMaxPersonalService();
-
       // Auto-start Podzamenu lookup service
       startPodzamenuService();
 
@@ -232,63 +228,6 @@ async function restoreWhatsAppSessions(realTenantId: string) {
     }
   } catch (err: any) {
     log(`Error scanning WhatsApp sessions: ${err.message}`, "whatsapp");
-  }
-}
-
-// Auto-start Max Personal Python microservice
-function startMaxPersonalService() {
-  const scriptPath = "./max_personal_service.py";
-  
-  if (!fs.existsSync(scriptPath)) {
-    log("Max Personal service script not found, skipping auto-start", "max-personal");
-    return;
-  }
-  
-  // Check if already running
-  if (maxPersonalProcess && !maxPersonalProcess.killed) {
-    log("Max Personal service already running", "max-personal");
-    return;
-  }
-  
-  try {
-    log("Starting Max Personal Python service...", "max-personal");
-    
-    maxPersonalProcess = spawn("python3", [scriptPath], {
-      detached: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        NODE_BACKEND_URL: `http://localhost:${process.env.PORT || 5000}`,
-      },
-    });
-    
-    maxPersonalProcess.stdout?.on("data", (data: Buffer) => {
-      const lines = data.toString().trim().split("\n");
-      lines.forEach(line => {
-        if (line.includes("Uvicorn running")) {
-          log("Max Personal service started on port 8100", "max-personal");
-        }
-      });
-    });
-    
-    maxPersonalProcess.stderr?.on("data", (data: Buffer) => {
-      const msg = data.toString().trim();
-      if (!msg.includes("INFO:")) {
-        console.error("[MaxPersonal]", msg);
-      }
-    });
-    
-    maxPersonalProcess.on("error", (err) => {
-      log(`Max Personal service error: ${err.message}`, "max-personal");
-    });
-    
-    maxPersonalProcess.on("exit", (code, signal) => {
-      log(`Max Personal service exited (code: ${code}, signal: ${signal})`, "max-personal");
-      maxPersonalProcess = null;
-    });
-    
-  } catch (err: any) {
-    log(`Failed to start Max Personal service: ${err.message}`, "max-personal");
   }
 }
 
@@ -358,10 +297,6 @@ async function gracefulShutdown(signal: string): Promise<void> {
   log(`Received ${signal}, starting graceful shutdown`, "shutdown");
 
   // Kill Python subprocesses first so they stop producing new work
-  if (maxPersonalProcess && !maxPersonalProcess.killed) {
-    maxPersonalProcess.kill();
-    log("Max Personal service stopped", "shutdown");
-  }
   if (podzamenuProcess && !podzamenuProcess.killed) {
     podzamenuProcess.kill();
     log("Podzamenu service stopped", "shutdown");

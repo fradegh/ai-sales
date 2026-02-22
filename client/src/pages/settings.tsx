@@ -1710,124 +1710,9 @@ interface WhatsAppPersonalCardProps {
 type WhatsAppAuthStatus = "disconnected" | "connecting" | "qr_ready" | "pairing_code_ready" | "connected" | "error" | "reconnecting";
 type WhatsAppAuthMethod = "qr" | "phone";
 
-function MaxPersonalCard({ channelStatuses, featureFlags, toggleChannelMutation, refetch }: WhatsAppPersonalCardProps) {
-  const { toast } = useToast();
-  const [authStatus, setAuthStatus] = useState<WhatsAppAuthStatus>("disconnected");
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [serviceAvailable, setServiceAvailable] = useState<boolean | null>(null);
-  const [connectedUser, setConnectedUser] = useState<{ id: string; name: string; phone: string } | null>(null);
-  const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
+function MaxPersonalCard({ channelStatuses }: Pick<WhatsAppPersonalCardProps, "channelStatuses">) {
   const maxPersonalStatus = channelStatuses?.find(c => c.channel === "max_personal");
-  const maxPersonalEnabled = featureFlags?.MAX_PERSONAL_CHANNEL_ENABLED ?? false;
-
-  const stopPolling = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-  };
-
-  const checkServiceStatus = async () => {
-    try {
-      const response = await apiRequest("GET", "/api/max-personal/service-status", undefined);
-      const result = await response.json();
-      setServiceAvailable(result.available);
-    } catch {
-      setServiceAvailable(false);
-    }
-  };
-
-  const startAuth = async () => {
-    setIsLoading(true);
-    setFallbackMessage(null);
-    try {
-      const response = await apiRequest("POST", "/api/max-personal/start-auth", {});
-      const result = await response.json();
-      
-      if (result.success) {
-        if (result.status === "connected" || result.status === "already_connected") {
-          setAuthStatus("connected");
-          setConnectedUser(result.user);
-          toast({ title: "Подключение успешно", description: "Max аккаунт уже авторизован" });
-          refetch();
-        } else if (result.qr_data_url || result.qrDataUrl) {
-          setQrDataUrl(result.qr_data_url || result.qrDataUrl);
-          setAuthStatus("qr_ready");
-          if (result.fallback && result.message) {
-            setFallbackMessage(result.message);
-          }
-          pollIntervalRef.current = setInterval(checkAuth, 2000);
-        }
-      } else {
-        toast({ title: "Ошибка", description: result.error, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "Ошибка", description: error.message || "Не удалось начать авторизацию", variant: "destructive" });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const checkAuth = async () => {
-    try {
-      const response = await apiRequest("POST", "/api/max-personal/check-auth", {});
-      const result = await response.json();
-      
-      if (result.status === "connected") {
-        stopPolling();
-        setConnectedUser(result.user);
-        setAuthStatus("connected");
-        toast({ title: "Авторизация успешна", description: `Аккаунт: ${result.user?.name || result.user?.phone || "подключен"}` });
-        refetch();
-      } else if (result.status === "qr_ready" && result.qrDataUrl) {
-        setQrDataUrl(result.qrDataUrl);
-        setAuthStatus("qr_ready");
-      } else if (result.status === "connecting") {
-        setAuthStatus("connecting");
-      } else if (result.status === "error" || result.status === "disconnected") {
-        stopPolling();
-        setAuthStatus("disconnected");
-        if (result.error) {
-          toast({ title: "Ошибка", description: result.error, variant: "destructive" });
-        }
-      }
-    } catch {
-    }
-  };
-
-  const logout = async () => {
-    setIsLoading(true);
-    try {
-      await apiRequest("POST", "/api/max-personal/logout", {});
-      setAuthStatus("disconnected");
-      setConnectedUser(null);
-      setQrDataUrl(null);
-      toast({ title: "Выход выполнен" });
-      refetch();
-    } catch (error: any) {
-      toast({ title: "Ошибка", description: error.message || "Не удалось выйти", variant: "destructive" });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const cancelAuth = () => {
-    stopPolling();
-    setAuthStatus("disconnected");
-    setQrDataUrl(null);
-  };
-
-  useEffect(() => {
-    if (maxPersonalEnabled) {
-      checkServiceStatus();
-    }
-    return () => stopPolling();
-  }, [maxPersonalEnabled]);
-
-  const isConnected = maxPersonalStatus?.connected || authStatus === "connected";
+  const isConnected = maxPersonalStatus?.connected ?? false;
 
   return (
     <Card>
@@ -1840,163 +1725,38 @@ function MaxPersonalCard({ channelStatuses, featureFlags, toggleChannelMutation,
               <CheckCircle2 className="mr-1 h-3 w-3" />
               Подключен
             </Badge>
-          ) : maxPersonalEnabled ? (
-            <Badge variant="outline" className="bg-yellow-500/10 text-yellow-600">
-              <AlertCircle className="mr-1 h-3 w-3" />
-              Не настроен
-            </Badge>
           ) : (
             <Badge variant="outline" className="bg-muted text-muted-foreground">
               <XCircle className="mr-1 h-3 w-3" />
-              Отключен
+              Не подключен
             </Badge>
           )}
         </CardTitle>
         <CardDescription>
-          Подключите личный аккаунт Max через QR-код
+          Личный аккаунт MAX через GREEN-API
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center justify-between rounded-md border p-4">
-          <div>
-            <Label>Включить Max Personal</Label>
-            <p className="text-xs text-muted-foreground mt-1">
-              Использовать личный аккаунт для переписки
-            </p>
-          </div>
-          <Switch
-            checked={maxPersonalEnabled}
-            onCheckedChange={(checked) => toggleChannelMutation.mutate({ channel: "max_personal", enabled: checked })}
-            disabled={toggleChannelMutation.isPending}
-            data-testid="switch-max-personal-enabled"
-          />
-        </div>
-
-        {maxPersonalEnabled && (
-          <>
-            <div className="rounded-md bg-yellow-500/10 border border-yellow-500/20 p-4">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />
-                <div>
-                  <p className="font-medium text-yellow-700 dark:text-yellow-400">Важное предупреждение</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Это неофициальный метод интеграции. Max может ограничить или заблокировать аккаунт при подозрительной активности. Используйте с осторожностью.
-                  </p>
-                </div>
-              </div>
+      <CardContent>
+        {isConnected ? (
+          <div className="rounded-md border p-4 bg-green-500/5 flex items-center gap-3">
+            <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0" />
+            <div>
+              <p className="font-medium">
+                Подключён{maxPersonalStatus?.botInfo?.first_name ? ` — ${maxPersonalStatus.botInfo.first_name}` : ""}
+              </p>
+              <p className="text-sm text-muted-foreground">Статус: авторизован</p>
             </div>
-
-            {serviceAvailable === false && (
-              <div className="rounded-md bg-red-500/10 border border-red-500/20 p-4">
-                <div className="flex items-start gap-2">
-                  <XCircle className="h-5 w-5 text-red-600 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-red-700 dark:text-red-400">Сервис недоступен</p>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Max Personal сервис не запущен. Обратитесь к администратору.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {serviceAvailable !== false && (
-              <>
-                {isConnected && connectedUser ? (
-                  <div className="rounded-md border p-4 bg-green-500/5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5 text-green-600" />
-                        <div>
-                          <p className="font-medium">Аккаунт подключен</p>
-                          <p className="text-sm text-muted-foreground">
-                            {connectedUser.name || connectedUser.phone}
-                          </p>
-                        </div>
-                      </div>
-                      <Button variant="outline" size="sm" onClick={logout} disabled={isLoading} data-testid="button-max-personal-logout">
-                        {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Отключить"}
-                      </Button>
-                    </div>
-                  </div>
-                ) : maxPersonalStatus?.connected && maxPersonalStatus.botInfo ? (
-                  <div className="rounded-md border p-4 bg-green-500/5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5 text-green-600" />
-                        <div>
-                          <p className="font-medium">Аккаунт подключен</p>
-                          <p className="text-sm text-muted-foreground">
-                            {maxPersonalStatus.botInfo.first_name}
-                            {maxPersonalStatus.botInfo.username && ` (+${maxPersonalStatus.botInfo.username})`}
-                          </p>
-                        </div>
-                      </div>
-                      <Button variant="outline" size="sm" onClick={logout} disabled={isLoading} data-testid="button-max-personal-logout">
-                        {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Отключить"}
-                      </Button>
-                    </div>
-                  </div>
-                ) : authStatus === "disconnected" ? (
-                  <div className="space-y-4">
-                    <div className="rounded-md border p-4">
-                      <h4 className="font-medium text-sm mb-3">Подключение через QR-код</h4>
-                      <p className="text-xs text-muted-foreground mb-3">
-                        Нажмите кнопку для получения QR-кода. Откройте Max на телефоне, перейдите в Настройки → Устройства → Привязать устройство и отсканируйте код.
-                      </p>
-                      <div className="space-y-3">
-                        <Button onClick={startAuth} disabled={isLoading} className="w-full" data-testid="button-max-start-auth">
-                          {isLoading ? (
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          ) : (
-                            <MessageSquare className="mr-2 h-4 w-4" />
-                          )}
-                          Получить QR-код
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ) : authStatus === "qr_ready" || authStatus === "connecting" ? (
-                  <div className="space-y-4">
-                    <div className="flex flex-col items-center">
-                      {authStatus === "connecting" ? (
-                        <div className="w-64 h-64 flex flex-col items-center justify-center gap-2">
-                          <Loader2 className="h-8 w-8 animate-spin" />
-                          <p className="text-sm text-muted-foreground">Подключение...</p>
-                        </div>
-                      ) : qrDataUrl ? (
-                        <div className="p-4 bg-white rounded-lg">
-                          <img 
-                            src={qrDataUrl} 
-                            alt="QR код для авторизации Max" 
-                            className="w-64 h-64"
-                            data-testid="img-max-qr"
-                          />
-                        </div>
-                      ) : (
-                        <div className="w-64 h-64 flex items-center justify-center">
-                          <Loader2 className="h-8 w-8 animate-spin" />
-                        </div>
-                      )}
-                      <p className="text-sm text-muted-foreground mt-4 text-center">
-                        {fallbackMessage || "Отсканируйте QR-код в приложении Max"}
-                      </p>
-                      {!fallbackMessage && (
-                        <p className="text-xs text-muted-foreground">
-                          Код обновляется автоматически
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex justify-center">
-                      <Button variant="outline" onClick={cancelAuth} data-testid="button-max-cancel-auth">
-                        Отмена
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            )}
-          </>
+          </div>
+        ) : (
+          <div className="rounded-md border p-4 flex items-start gap-3">
+            <XCircle className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium text-muted-foreground">Не подключён</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Обратитесь к администратору платформы для подключения MAX-аккаунта
+              </p>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
@@ -2693,9 +2453,6 @@ function ChannelSettings() {
 
       <MaxPersonalCard
         channelStatuses={channelStatuses}
-        featureFlags={featureFlags}
-        toggleChannelMutation={toggleChannelMutation}
-        refetch={refetch}
       />
         </div>
       </ChannelPaywallOverlay>

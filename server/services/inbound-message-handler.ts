@@ -189,9 +189,11 @@ export async function handleIncomingMessage(
     conversationId,
     role: "customer",
     content: parsed.text,
+    attachments: parsed.attachments ?? [],
     metadata: {
       externalId: parsed.externalMessageId,
       channel: parsed.channel,
+      ...(parsed.forwardedFrom && { forwardedFrom: parsed.forwardedFrom }),
       ...parsed.metadata,
     },
     createdAt: parsed.timestamp ? new Date(parsed.timestamp) : undefined,

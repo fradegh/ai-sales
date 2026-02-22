@@ -1532,3 +1532,27 @@ export const insertTenantAgentSettingsSchema = createInsertSchema(tenantAgentSet
   id: true,
   updatedAt: true,
 });
+
+// MAX Personal (GREEN-API) accounts — one per tenant, managed by platform admin only
+export const maxPersonalAccounts = pgTable("max_personal_accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  idInstance: varchar("id_instance").notNull(),
+  apiTokenInstance: varchar("api_token_instance").notNull(),
+  displayName: text("display_name"),
+  status: text("status").notNull().default("unknown"),
+  webhookRegistered: boolean("webhook_registered").default(false),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => [
+  uniqueIndex("max_personal_accounts_tenant_idx").on(table.tenantId),
+]);
+
+export type MaxPersonalAccount = typeof maxPersonalAccounts.$inferSelect;
+export type InsertMaxPersonalAccount = typeof maxPersonalAccounts.$inferInsert;
+
+export const insertMaxPersonalAccountSchema = createInsertSchema(maxPersonalAccounts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});

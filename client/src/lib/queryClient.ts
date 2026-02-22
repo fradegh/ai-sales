@@ -51,7 +51,11 @@ export async function apiRequest(
   const isMutating = !SAFE_METHODS.has(method.toUpperCase());
 
   const headers: Record<string, string> = {};
-  if (data) headers["Content-Type"] = "application/json";
+  // Don't set Content-Type for FormData — the browser sets it automatically
+  // with the correct multipart boundary. For plain objects, use JSON.
+  if (data && !(data instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
 
   if (isMutating) {
     try {
@@ -65,7 +69,7 @@ export async function apiRequest(
   const res = await fetch(url, {
     method,
     headers,
-    body: data ? JSON.stringify(data) : undefined,
+    body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
 

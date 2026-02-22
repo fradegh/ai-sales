@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
 import { db } from "../db";
-import { users, tenants, subscriptions, subscriptionGrants, adminActions, integrationSecrets, SECRET_SCOPES, proxies, PROXY_PROTOCOLS, PROXY_STATUSES } from "@shared/schema";
+import { users, tenants, subscriptions, subscriptionGrants, adminActions, integrationSecrets, SECRET_SCOPES, proxies, PROXY_PROTOCOLS, PROXY_STATUSES, maxPersonalAccounts } from "@shared/schema";
 import { ilike, or, eq, desc, isNull, and, sql } from "drizzle-orm";
 import { requirePlatformAdmin, auditAdminAction } from "../middleware/platform-admin";
 import { requirePlatformOwner } from "../middleware/platform-owner";
@@ -1906,6 +1906,189 @@ router.get(
     } catch (error) {
       console.error("[Admin] Error getting available proxies:", error);
       res.status(500).json({ error: "Failed to get available proxies" });
+    }
+  }
+);
+
+// ============ MAX PERSONAL (GREEN-API) ADMIN ROUTES ============
+
+const maxPersonalCredentialsSchema = z.object({
+  idInstance: z.string().min(1),
+  apiTokenInstance: z.string().min(1),
+});
+
+router.get(
+  "/users/:userId/max-personal",
+  requireAuth,
+  requirePlatformAdmin(),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      const user = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, userId)).limit(1);
+      if (!user[0]?.tenantId) {
+        return res.status(404).json({ error: "User or tenant not found" });
+      }
+      const { tenantId } = user[0];
+
+      const account = await db.query.maxPersonalAccounts.findFirst({
+        where: eq(maxPersonalAccounts.tenantId, tenantId),
+      });
+
+      if (!account) {
+        return res.json({ connected: false });
+      }
+
+      const maskedToken =
+        account.apiTokenInstance.length > 4
+          ? `${"•".repeat(account.apiTokenInstance.length - 4)}${account.apiTokenInstance.slice(-4)}`
+          : "••••";
+
+      return res.json({
+        connected: true,
+        idInstance: account.idInstance,
+        apiTokenInstance: maskedToken,
+        status: account.status,
+        displayName: account.displayName,
+        webhookRegistered: account.webhookRegistered,
+      });
+    } catch (error) {
+      console.error("[Admin] Error fetching MAX Personal account:", error);
+      res.status(500).json({ error: "Failed to fetch MAX Personal account" });
+    }
+  }
+);
+
+router.post(
+  "/users/:userId/max-personal",
+  requireAuth,
+  requirePlatformAdmin(),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const parsed = maxPersonalCredentialsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "idInstance and apiTokenInstance are required" });
+      }
+      const { idInstance, apiTokenInstance } = parsed.data;
+
+      const userRow = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, userId)).limit(1);
+      if (!userRow[0]?.tenantId) {
+        return res.status(404).json({ error: "User or tenant not found" });
+      }
+      const { tenantId } = userRow[0];
+
+      const { maxGreenApiAdapter } = await import("../services/max-green-api-adapter");
+
+      // 1. Verify state
+      let state: string;
+      try {
+        state = await maxGreenApiAdapter.getState(idInstance, apiTokenInstance);
+      } catch (err: any) {
+        return res.status(400).json({ error: `Не удалось проверить инстанс GREEN-API: ${err.message}` });
+      }
+
+      if (state !== "authorized") {
+        return res.status(400).json({
+          error: `Инстанс не авторизован на GREEN-API (статус: ${state}). Пожалуйста, войдите на green-api.com.`,
+        });
+      }
+
+      // 2. Get account display name
+      let displayName: string | undefined;
+      try {
+        const info = await maxGreenApiAdapter.getAccountInfo(idInstance, apiTokenInstance);
+        displayName = info.nameAccount || info.wid;
+      } catch {
+        // non-fatal
+      }
+
+      // 3. Register webhook
+      const appUrl = (process.env.APP_URL || "").replace(/\/$/, "");
+      const webhookUrl = `${appUrl}/webhooks/max-personal/${tenantId}`;
+      let webhookRegistered = false;
+      try {
+        await maxGreenApiAdapter.setWebhook(idInstance, apiTokenInstance, webhookUrl);
+        webhookRegistered = true;
+      } catch (err: any) {
+        console.error("[Admin] GREEN-API setWebhook failed:", err.message);
+      }
+
+      // 4. Upsert record
+      const existing = await db.query.maxPersonalAccounts.findFirst({
+        where: eq(maxPersonalAccounts.tenantId, tenantId),
+      });
+
+      if (existing) {
+        await db
+          .update(maxPersonalAccounts)
+          .set({
+            idInstance,
+            apiTokenInstance,
+            displayName: displayName ?? null,
+            status: "authorized",
+            webhookRegistered,
+            updatedAt: new Date(),
+          })
+          .where(eq(maxPersonalAccounts.tenantId, tenantId));
+      } else {
+        await db.insert(maxPersonalAccounts).values({
+          tenantId,
+          idInstance,
+          apiTokenInstance,
+          displayName: displayName ?? null,
+          status: "authorized",
+          webhookRegistered,
+        });
+      }
+
+      return res.json({
+        success: true,
+        status: "authorized",
+        displayName,
+        webhookRegistered,
+      });
+    } catch (error) {
+      console.error("[Admin] Error saving MAX Personal account:", error);
+      res.status(500).json({ error: "Failed to save MAX Personal account" });
+    }
+  }
+);
+
+router.delete(
+  "/users/:userId/max-personal",
+  requireAuth,
+  requirePlatformAdmin(),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      const userRow = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, userId)).limit(1);
+      if (!userRow[0]?.tenantId) {
+        return res.status(404).json({ error: "User or tenant not found" });
+      }
+      const { tenantId } = userRow[0];
+
+      const account = await db.query.maxPersonalAccounts.findFirst({
+        where: eq(maxPersonalAccounts.tenantId, tenantId),
+      });
+
+      if (account) {
+        // Optionally clear webhook
+        try {
+          const { maxGreenApiAdapter } = await import("../services/max-green-api-adapter");
+          await maxGreenApiAdapter.setWebhook(account.idInstance, account.apiTokenInstance, "");
+        } catch {
+          // non-fatal
+        }
+
+        await db.delete(maxPersonalAccounts).where(eq(maxPersonalAccounts.tenantId, tenantId));
+      }
+
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("[Admin] Error deleting MAX Personal account:", error);
+      res.status(500).json({ error: "Failed to delete MAX Personal account" });
     }
   }
 );

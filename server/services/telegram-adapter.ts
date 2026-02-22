@@ -2,6 +2,7 @@ import type { ChannelType, FeatureFlagName } from "@shared/schema";
 import type {
   ChannelAdapter,
   ChannelSendResult,
+  ParsedAttachment,
   ParsedIncomingMessage,
   WebhookVerifyResult,
 } from "./channel-adapter";
@@ -40,13 +41,101 @@ export interface TelegramChat {
   last_name?: string;
 }
 
+interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
+interface TelegramVoice {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
+interface TelegramAudio {
+  file_id: string;
+  file_unique_id: string;
+  duration: number;
+  performer?: string;
+  title?: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+interface TelegramVideo {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  duration: number;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+interface TelegramVideoNote {
+  file_id: string;
+  file_unique_id: string;
+  length: number;
+  duration: number;
+  file_size?: number;
+}
+
+interface TelegramDocument {
+  file_id: string;
+  file_unique_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+interface TelegramSticker {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  is_animated: boolean;
+  is_video: boolean;
+  type: string;
+}
+
+interface TelegramPoll {
+  id: string;
+  question: string;
+  options: Array<{ text: string; voter_count: number }>;
+  total_voter_count: number;
+  is_closed: boolean;
+  is_anonymous: boolean;
+  type: string;
+  allows_multiple_answers: boolean;
+}
+
 export interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
   chat: TelegramChat;
   date: number;
   text?: string;
+  caption?: string;
   reply_to_message?: TelegramMessage;
+  photo?: TelegramPhotoSize[];
+  voice?: TelegramVoice;
+  audio?: TelegramAudio;
+  video?: TelegramVideo;
+  video_note?: TelegramVideoNote;
+  document?: TelegramDocument;
+  sticker?: TelegramSticker;
+  animation?: TelegramDocument;
+  poll?: TelegramPoll;
+  forward_from?: TelegramUser;
+  forward_from_chat?: TelegramChat;
+  forward_date?: number;
 }
 
 export interface TelegramUpdate {
@@ -314,6 +403,100 @@ export class TelegramAdapter implements ChannelAdapter {
     };
   }
 
+  /**
+   * Sends a file to a Telegram chat using the appropriate Bot API method
+   * (sendPhoto, sendDocument, sendAudio, sendVoice, sendVideo).
+   * The file is streamed directly to Telegram — no local storage needed.
+   * Returns the sent message metadata including Telegram's file_id.
+   */
+  async sendMediaMessage(
+    externalConversationId: string,
+    buffer: Buffer,
+    mimeType: string,
+    fileName: string,
+    caption: string,
+  ): Promise<ChannelSendResult & { fileId?: string; sentMsgId?: string }> {
+    if (!this.token) {
+      return { success: false, error: "TELEGRAM_BOT_TOKEN not configured" };
+    }
+
+    const chatId = parseInt(externalConversationId, 10);
+    if (isNaN(chatId)) {
+      return { success: false, error: "Invalid chat ID" };
+    }
+
+    const { method, fieldName, attachmentType } = this.resolveMediaMethod(mimeType, fileName);
+
+    const formData = new FormData();
+    formData.append("chat_id", String(chatId));
+    formData.append(fieldName, new Blob([buffer], { type: mimeType }), fileName);
+    if (caption) {
+      formData.append("caption", caption.substring(0, 1024));
+      formData.append("parse_mode", "HTML");
+    }
+
+    try {
+      const response = await fetch(this.getApiUrl(method), {
+        method: "POST",
+        body: formData,
+      });
+
+      const json = (await response.json()) as TelegramApiResponse<TelegramMessage>;
+
+      if (!json.ok || !json.result) {
+        console.error(`[TelegramAdapter] Media send failed: ${json.description}`);
+        return { success: false, error: json.description || "Media send failed" };
+      }
+
+      const msg = json.result;
+      const fileId = this.extractFileId(msg, attachmentType);
+      const msgId = String(msg.message_id);
+
+      console.log(`[TelegramAdapter] Media sent (${attachmentType}): msgId=${msgId}, fileId=${fileId}`);
+      return {
+        success: true,
+        externalMessageId: msgId,
+        timestamp: new Date(msg.date * 1000),
+        fileId,
+        sentMsgId: msgId,
+      };
+    } catch (error: any) {
+      console.error(`[TelegramAdapter] Media send error: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  private resolveMediaMethod(
+    mimeType: string,
+    fileName: string,
+  ): { method: string; fieldName: string; attachmentType: ParsedAttachment["type"] } {
+    const mime = mimeType.toLowerCase();
+    if (mime.startsWith("image/") && !mime.includes("gif")) {
+      return { method: "sendPhoto", fieldName: "photo", attachmentType: "image" };
+    }
+    if (mime === "audio/ogg" || mime === "audio/mpeg" && fileName.toLowerCase().endsWith(".oga")) {
+      return { method: "sendVoice", fieldName: "voice", attachmentType: "voice" };
+    }
+    if (mime.startsWith("audio/")) {
+      return { method: "sendAudio", fieldName: "audio", attachmentType: "audio" };
+    }
+    if (mime.startsWith("video/")) {
+      return { method: "sendVideo", fieldName: "video", attachmentType: "video" };
+    }
+    return { method: "sendDocument", fieldName: "document", attachmentType: "document" };
+  }
+
+  private extractFileId(msg: TelegramMessage, type: ParsedAttachment["type"]): string | undefined {
+    if (type === "image" && msg.photo) {
+      return msg.photo[msg.photo.length - 1]?.file_id;
+    }
+    if (type === "voice" && msg.voice) return msg.voice.file_id;
+    if (type === "audio" && msg.audio) return msg.audio.file_id;
+    if (type === "video" && msg.video) return msg.video.file_id;
+    if (msg.document) return msg.document.file_id;
+    return undefined;
+  }
+
   async sendTypingStart(externalConversationId: string): Promise<void> {
     if (!this.token) {
       return;
@@ -341,7 +524,6 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     const update = rawPayload as TelegramUpdate;
-
     const message = update.message || update.edited_message;
 
     if (!message) {
@@ -349,8 +531,20 @@ export class TelegramAdapter implements ChannelAdapter {
       return null;
     }
 
-    if (!message.text) {
-      console.log("[TelegramAdapter] No text in message, ignoring");
+    const hasMedia = !!(
+      message.photo ||
+      message.voice ||
+      message.audio ||
+      message.video ||
+      message.video_note ||
+      message.document ||
+      message.sticker ||
+      message.animation ||
+      message.poll
+    );
+
+    if (!message.text && !message.caption && !hasMedia) {
+      console.log("[TelegramAdapter] No text or media in message, ignoring");
       return null;
     }
 
@@ -371,11 +565,129 @@ export class TelegramAdapter implements ChannelAdapter {
       }
     }
 
+    const attachments: ParsedAttachment[] = [];
+
+    if (message.photo) {
+      const largest = message.photo[message.photo.length - 1];
+      attachments.push({
+        type: "image",
+        fileId: largest.file_id,
+        url: `/api/telegram/file/${largest.file_id}`,
+        width: largest.width,
+        height: largest.height,
+        fileSize: largest.file_size,
+        mimeType: "image/jpeg",
+      });
+    }
+
+    if (message.voice) {
+      attachments.push({
+        type: "voice",
+        fileId: message.voice.file_id,
+        url: `/api/telegram/file/${message.voice.file_id}`,
+        duration: message.voice.duration,
+        mimeType: message.voice.mime_type,
+        fileSize: message.voice.file_size,
+      });
+    }
+
+    if (message.audio) {
+      attachments.push({
+        type: "audio",
+        fileId: message.audio.file_id,
+        url: `/api/telegram/file/${message.audio.file_id}`,
+        duration: message.audio.duration,
+        mimeType: message.audio.mime_type,
+        fileSize: message.audio.file_size,
+        fileName: message.audio.file_name,
+      });
+    }
+
+    if (message.video) {
+      attachments.push({
+        type: "video",
+        fileId: message.video.file_id,
+        url: `/api/telegram/file/${message.video.file_id}`,
+        duration: message.video.duration,
+        width: message.video.width,
+        height: message.video.height,
+        mimeType: message.video.mime_type,
+        fileSize: message.video.file_size,
+        fileName: message.video.file_name,
+      });
+    }
+
+    if (message.video_note) {
+      attachments.push({
+        type: "video_note",
+        fileId: message.video_note.file_id,
+        url: `/api/telegram/file/${message.video_note.file_id}`,
+        duration: message.video_note.duration,
+        width: message.video_note.length,
+        height: message.video_note.length,
+        fileSize: message.video_note.file_size,
+      });
+    }
+
+    if (message.document) {
+      attachments.push({
+        type: "document",
+        fileId: message.document.file_id,
+        url: `/api/telegram/file/${message.document.file_id}`,
+        mimeType: message.document.mime_type,
+        fileSize: message.document.file_size,
+        fileName: message.document.file_name,
+      });
+    }
+
+    if (message.sticker) {
+      attachments.push({
+        type: "sticker",
+        fileId: message.sticker.file_id,
+        url: `/api/telegram/file/${message.sticker.file_id}`,
+        width: message.sticker.width,
+        height: message.sticker.height,
+      });
+    }
+
+    if (message.animation) {
+      attachments.push({
+        type: "video",
+        fileId: message.animation.file_id,
+        url: `/api/telegram/file/${message.animation.file_id}`,
+        mimeType: message.animation.mime_type,
+        fileSize: message.animation.file_size,
+        fileName: message.animation.file_name,
+      });
+    }
+
+    if (message.poll) {
+      attachments.push({
+        type: "poll",
+        pollQuestion: message.poll.question,
+        pollOptions: message.poll.options.map((o) => o.text),
+      });
+    }
+
+    let forwardedFrom: ParsedIncomingMessage["forwardedFrom"];
+    if (message.forward_from || message.forward_from_chat) {
+      forwardedFrom = {
+        name: message.forward_from
+          ? [message.forward_from.first_name, message.forward_from.last_name]
+              .filter(Boolean)
+              .join(" ")
+          : message.forward_from_chat?.title,
+        username:
+          message.forward_from?.username ?? message.forward_from_chat?.username,
+        date: message.forward_date,
+      };
+    }
+
     return {
       externalMessageId: messageId,
       externalConversationId: String(message.chat.id),
       externalUserId: message.from ? String(message.from.id) : "unknown",
-      text: message.text,
+      text: message.text ?? message.caption ?? "",
       timestamp: new Date(message.date * 1000),
       channel: "telegram",
       metadata: {
@@ -388,6 +700,8 @@ export class TelegramAdapter implements ChannelAdapter {
         chatTitle: message.chat.title,
         chatUsername: message.chat.username,
       },
+      ...(attachments.length > 0 && { attachments }),
+      ...(forwardedFrom && { forwardedFrom }),
     };
   }
 
@@ -427,7 +741,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const body: Record<string, unknown> = {
       url: webhookUrl,
-      allowed_updates: ["message", "edited_message"],
+      allowed_updates: ["message", "edited_message", "channel_post"],
       drop_pending_updates: false,
     };
 

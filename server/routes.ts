@@ -5,6 +5,7 @@ import { registerPhase0Routes } from "./routes/phase0";
 import authRouter from "./routes/auth";
 import adminRouter from "./routes/admin";
 import maxWebhookRouter from "./routes/max-webhook";
+import maxPersonalWebhookRouter from "./routes/max-personal-webhook";
 import { telegramWebhookHandler } from "./routes/telegram-webhook";
 import { whatsappWebhookHandler, whatsappWebhookVerifyHandler } from "./routes/whatsapp-webhook";
 import { featureFlagService } from "./services/feature-flags";
@@ -179,13 +180,34 @@ export async function registerRoutes(
             } : channelConnectionCache.get("whatsapp_personal")?.botInfo,
           };
         })(),
-        {
-          channel: "max_personal",
-          enabled: await featureFlagService.isEnabled("MAX_PERSONAL_CHANNEL_ENABLED"),
-          connected: channelConnectionCache.get("max_personal")?.connected ?? false,
-          lastError: channelConnectionCache.get("max_personal")?.lastError,
-          botInfo: channelConnectionCache.get("max_personal")?.botInfo,
-        },
+        await (async () => {
+          const mpUser = req.userId ? await storage.getUser(req.userId) : undefined;
+          const mpTenantId = mpUser?.tenantId;
+          let mpConnected = false;
+          let mpBotInfo: { first_name?: string } | undefined;
+          if (mpTenantId) {
+            try {
+              const { db } = await import("./db");
+              const { maxPersonalAccounts } = await import("@shared/schema");
+              const { eq } = await import("drizzle-orm");
+              const account = await db.query.maxPersonalAccounts.findFirst({
+                where: eq(maxPersonalAccounts.tenantId, mpTenantId),
+              });
+              if (account && account.status === "authorized") {
+                mpConnected = true;
+                mpBotInfo = { first_name: account.displayName ?? undefined };
+              }
+            } catch {
+              // ignore — DB may not have the table yet
+            }
+          }
+          return {
+            channel: "max_personal",
+            enabled: await featureFlagService.isEnabled("MAX_PERSONAL_CHANNEL_ENABLED"),
+            connected: mpConnected,
+            botInfo: mpBotInfo,
+          };
+        })(),
       ];
 
       res.json(statuses);
@@ -1147,6 +1169,121 @@ export async function registerRoutes(
     }
   });
 
+  // ============ TELEGRAM FILE PROXY (Bot API) ============
+
+  app.get("/api/telegram/file/:fileId", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const { fileId } = req.params;
+      if (!fileId || typeof fileId !== "string") {
+        return res.status(400).json({ error: "Invalid file ID" });
+      }
+
+      const token = process.env.TELEGRAM_BOT_TOKEN;
+      if (!token) {
+        return res.status(503).json({ error: "Telegram Bot API not configured" });
+      }
+
+      // Step 1: resolve file_path from Telegram
+      const getFileResp = await fetch(
+        `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`,
+      );
+      if (!getFileResp.ok) {
+        return res.status(502).json({ error: "Failed to resolve file from Telegram" });
+      }
+      const getFileJson = (await getFileResp.json()) as { ok: boolean; result?: { file_path: string } };
+      if (!getFileJson.ok || !getFileJson.result?.file_path) {
+        return res.status(404).json({ error: "File not found on Telegram" });
+      }
+
+      // Step 2: stream the file from Telegram CDN
+      const fileUrl = `https://api.telegram.org/file/bot${token}/${getFileJson.result.file_path}`;
+      const fileResp = await fetch(fileUrl);
+      if (!fileResp.ok || !fileResp.body) {
+        return res.status(502).json({ error: "Failed to fetch file content" });
+      }
+
+      const contentType = fileResp.headers.get("content-type") || "application/octet-stream";
+      const contentLength = fileResp.headers.get("content-length");
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      if (contentLength) res.setHeader("Content-Length", contentLength);
+
+      const { Readable } = await import("stream");
+      const nodeStream = Readable.fromWeb(fileResp.body as any);
+      nodeStream.pipe(res);
+    } catch (error: any) {
+      console.error("[TelegramFileProxy] Error:", error.message);
+      res.status(500).json({ error: "Failed to proxy file" });
+    }
+  });
+
+  // ============ TELEGRAM PERSONAL MEDIA PROXY (MTProto) ============
+
+  app.get(
+    "/api/telegram-personal/media/:accountId/:chatId/:msgId",
+    requireAuth,
+    async (req: Request, res: Response) => {
+      try {
+        const user = await storage.getUser(req.userId!);
+        const tenantId = user?.tenantId;
+        if (!tenantId) {
+          return res.status(403).json({ error: "User not associated with a tenant" });
+        }
+
+        const { accountId, chatId, msgId } = req.params;
+        const msgIdNum = parseInt(msgId, 10);
+        if (isNaN(msgIdNum)) {
+          return res.status(400).json({ error: "Invalid message ID" });
+        }
+
+        const { telegramClientManager } = await import("./services/telegram-client-manager");
+
+        // Try both the accountId directly and legacy format
+        let client = telegramClientManager.getClientForAccount(tenantId, accountId);
+        if (!client) {
+          // Fallback: accountId might be legacy_channelId — resolve channel
+          const channels = await storage.getChannelsByTenant(tenantId);
+          const tgChannel = channels.find((c) => c.type === "telegram_personal" && c.isActive);
+          if (tgChannel) {
+            client = telegramClientManager.getClient(tenantId, tgChannel.id);
+          }
+        }
+
+        if (!client) {
+          return res.status(503).json({ error: "Telegram account not connected" });
+        }
+
+        const messages = await client.getMessages(BigInt(chatId), { ids: [msgIdNum] });
+        const msg = messages?.[0];
+        if (!msg) {
+          return res.status(404).json({ error: "Message not found" });
+        }
+
+        const buffer = (await client.downloadMedia(msg, {})) as Buffer | undefined;
+        if (!buffer || buffer.length === 0) {
+          return res.status(404).json({ error: "Media not available" });
+        }
+
+        // Detect content type from document mime or default to octet-stream
+        let contentType = "application/octet-stream";
+        const media = msg.media;
+        if (media && "document" in media && media.document && "mimeType" in (media.document as any)) {
+          contentType = (media.document as any).mimeType || contentType;
+        } else if (media && media instanceof (await import("telegram")).Api.MessageMediaPhoto) {
+          contentType = "image/jpeg";
+        }
+
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Length", buffer.length);
+        res.setHeader("Cache-Control", "private, max-age=3600");
+        res.send(buffer);
+      } catch (error: any) {
+        console.error("[TelegramPersonalMediaProxy] Error:", error.message);
+        res.status(500).json({ error: "Failed to download media" });
+      }
+    },
+  );
+
   // ============ WHATSAPP PERSONAL ROUTES ============
 
   app.post("/api/whatsapp-personal/start-auth", requireAuth, requirePermission("MANAGE_CHANNELS"), requireActiveSubscription, async (req: Request, res: Response) => {
@@ -1330,204 +1467,6 @@ export async function registerRoutes(
     }
   });
 
-  // ============ MAX PERSONAL ROUTES ============
-
-  app.post("/api/max-personal/start-auth", requireAuth, requirePermission("MANAGE_CHANNELS"), requireActiveSubscription, async (req: Request, res: Response) => {
-    try {
-      const user = await storage.getUserByOidcId(req.userId!) || await storage.getUser(req.userId!);
-      const tenantId = user?.tenantId;
-      
-      if (!tenantId) {
-        return res.status(403).json({ error: "User not associated with a tenant" });
-      }
-
-      const { MaxPersonalAdapter } = await import("./services/max-personal-adapter");
-      
-      const isAvailable = await MaxPersonalAdapter.isServiceAvailable();
-      if (!isAvailable) {
-        return res.status(503).json({ 
-          error: "Max Personal service is not running. Please contact administrator.",
-          code: "SERVICE_UNAVAILABLE"
-        });
-      }
-
-      const result = await MaxPersonalAdapter.startAuth(tenantId);
-
-      if (result.success) {
-        if (result.status === "qr_ready") {
-          res.json({
-            success: true,
-            status: "qr_ready",
-            qrCode: result.qrCode,
-            qrDataUrl: result.qrDataUrl,
-          });
-        } else if (result.status === "connected") {
-          channelConnectionCache.set("max_personal", {
-            connected: true,
-            lastError: undefined,
-            lastChecked: new Date().toISOString(),
-          });
-          res.json({ success: true, status: "connected", user: result.user });
-        } else {
-          res.json({ success: true, status: result.status });
-        }
-      } else {
-        res.status(400).json({ success: false, error: result.error });
-      }
-    } catch (error: any) {
-      console.error("Error starting Max Personal auth:", error);
-      res.status(500).json({ error: error.message || "Failed to start authentication" });
-    }
-  });
-
-  app.post("/api/max-personal/check-auth", requireAuth, requirePermission("MANAGE_CHANNELS"), async (req: Request, res: Response) => {
-    try {
-      const user = await storage.getUserByOidcId(req.userId!) || await storage.getUser(req.userId!);
-      const tenantId = user?.tenantId;
-      
-      if (!tenantId) {
-        return res.status(403).json({ error: "User not associated with a tenant" });
-      }
-
-      const { MaxPersonalAdapter } = await import("./services/max-personal-adapter");
-      const result = await MaxPersonalAdapter.checkAuth(tenantId);
-
-      if (result.status === "connected" && result.user) {
-        channelConnectionCache.set("max_personal", {
-          connected: true,
-          botInfo: {
-            user_id: parseInt(result.user.id, 10) || 0,
-            first_name: result.user.name,
-            username: result.user.phone,
-          },
-          lastError: undefined,
-          lastChecked: new Date().toISOString(),
-        });
-      }
-
-      res.json({
-        success: result.success,
-        status: result.status,
-        qrCode: result.qrCode,
-        qrDataUrl: result.qrDataUrl,
-        user: result.user,
-        error: result.error,
-      });
-    } catch (error: any) {
-      console.error("Error checking Max Personal auth:", error);
-      res.status(500).json({ error: error.message || "Failed to check authentication" });
-    }
-  });
-
-  app.post("/api/max-personal/logout", requireAuth, requirePermission("MANAGE_CHANNELS"), async (req: Request, res: Response) => {
-    try {
-      const user = await storage.getUserByOidcId(req.userId!) || await storage.getUser(req.userId!);
-      const tenantId = user?.tenantId;
-      
-      if (!tenantId) {
-        return res.status(403).json({ error: "User not associated with a tenant" });
-      }
-
-      const { MaxPersonalAdapter } = await import("./services/max-personal-adapter");
-      const result = await MaxPersonalAdapter.logout(tenantId);
-
-      channelConnectionCache.set("max_personal", {
-        connected: false,
-        lastError: undefined,
-        lastChecked: new Date().toISOString(),
-      });
-
-      res.json(result);
-    } catch (error: any) {
-      console.error("Error logging out Max Personal:", error);
-      res.status(500).json({ error: error.message || "Failed to logout" });
-    }
-  });
-
-  app.get("/api/max-personal/status", requireAuth, requirePermission("MANAGE_CHANNELS"), async (req: Request, res: Response) => {
-    try {
-      const user = await storage.getUserByOidcId(req.userId!) || await storage.getUser(req.userId!);
-      const tenantId = user?.tenantId;
-      
-      if (!tenantId) {
-        return res.status(403).json({ error: "User not associated with a tenant" });
-      }
-
-      const { MaxPersonalAdapter } = await import("./services/max-personal-adapter");
-      const isConnected = await MaxPersonalAdapter.isConnected(tenantId);
-      const authCheck = await MaxPersonalAdapter.checkAuth(tenantId);
-
-      res.json({
-        connected: isConnected,
-        status: authCheck.status,
-        user: authCheck.user,
-      });
-    } catch (error: any) {
-      console.error("Error checking Max Personal status:", error);
-      res.status(500).json({ error: error.message || "Failed to check status" });
-    }
-  });
-
-  app.get("/api/max-personal/service-status", requireAuth, requirePermission("MANAGE_CHANNELS"), async (req: Request, res: Response) => {
-    try {
-      const { MaxPersonalAdapter } = await import("./services/max-personal-adapter");
-      const isAvailable = await MaxPersonalAdapter.isServiceAvailable();
-      res.json({ available: isAvailable });
-    } catch (error: any) {
-      res.json({ available: false, error: error.message });
-    }
-  });
-
-  app.post("/api/max-personal/incoming", async (req: Request, res: Response) => {
-    try {
-      const internalSecret = req.headers["x-internal-secret"];
-      const expectedSecret = process.env.MAX_INTERNAL_SECRET || process.env.SESSION_SECRET;
-      
-      if (!expectedSecret || expectedSecret.length < 8) {
-        console.warn("[MaxPersonal] Incoming request rejected - internal secret not properly configured");
-        return res.status(403).json({ error: "Forbidden" });
-      }
-      
-      if (!internalSecret || internalSecret !== expectedSecret) {
-        console.warn("[MaxPersonal] Incoming request rejected - invalid internal secret");
-        return res.status(403).json({ error: "Forbidden" });
-      }
-      
-      const { tenant_id, message } = req.body;
-      
-      if (!tenant_id || !message) {
-        return res.status(400).json({ error: "Missing tenant_id or message" });
-      }
-
-      const tenant = await storage.getTenant(tenant_id);
-      if (!tenant) {
-        return res.status(400).json({ error: "Invalid tenant" });
-      }
-
-      const { MaxPersonalAdapter } = await import("./services/max-personal-adapter");
-      const { processIncomingMessageFull } = await import("./services/inbound-message-handler");
-      
-      const isConnected = await MaxPersonalAdapter.isConnected(tenant_id);
-      if (!isConnected) {
-        console.warn(`[MaxPersonal] Incoming message rejected - tenant ${tenant_id} not connected`);
-        return res.status(400).json({ error: "Tenant not connected" });
-      }
-      
-      const adapter = new MaxPersonalAdapter(tenant_id);
-      const parsed = adapter.parseIncomingMessage(message);
-      
-      if (parsed) {
-        await processIncomingMessageFull(tenant_id, parsed);
-        console.log(`[MaxPersonal] Incoming message processed for tenant ${tenant_id}`);
-      }
-
-      res.json({ success: true });
-    } catch (error: any) {
-      console.error("Error processing Max Personal incoming message:", error);
-      res.status(500).json({ error: error.message || "Failed to process message" });
-    }
-  });
-
   // ============ TEST / DEBUG ROUTES ============
   // Available when NODE_ENV !== 'production' OR ENABLE_TEST_ENDPOINTS=true
 
@@ -1601,6 +1540,9 @@ export async function registerRoutes(
 
   // ============ MAX WEBHOOK ROUTES ============
   app.use("/webhooks/max", maxWebhookRouter);
+
+  // ============ MAX PERSONAL (GREEN-API) WEBHOOK ============
+  app.use("/webhooks/max-personal", webhookRateLimiter, maxPersonalWebhookRouter);
 
   // ============ AUTH ROUTES (email/password) ============
   app.use("/auth", authRouter);

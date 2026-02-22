@@ -5,6 +5,7 @@ import { storage } from "../storage";
 import { getSecret } from "./secret-resolver";
 import { processIncomingMessageFull } from "./inbound-message-handler";
 import { featureFlagService } from "./feature-flags";
+import type { ParsedAttachment } from "./channel-adapter";
 
 interface ActiveConnection {
   tenantId: string;
@@ -394,14 +395,19 @@ class TelegramClientManager {
 
       const senderId = message.senderId?.toString() || "";
       const chatId = message.chatId?.toString() || "";
-      const text = message.text || "";
+      const text = message.text || message.message || "";
 
-      if (!text.trim()) {
+      const hasMedia =
+        !!message.media && !(message.media instanceof Api.MessageMediaEmpty);
+
+      if (!text.trim() && !hasMedia) {
         console.log("[TelegramClientManager] Skipping empty message");
         return;
       }
 
-      console.log(`[TelegramClientManager] New message from ${senderId} in chat ${chatId}: ${text.substring(0, 50)}...`);
+      console.log(
+        `[TelegramClientManager] New message from ${senderId} in chat ${chatId}: ${text.substring(0, 50)}${hasMedia ? " [+media]" : ""}`,
+      );
 
       const connectionKey = `${tenantId}:${accountId}`;
       const connection = this.connections.get(connectionKey);
@@ -413,9 +419,38 @@ class TelegramClientManager {
       try {
         const sender = await message.getSender();
         if (sender && "firstName" in sender) {
-          senderName = [sender.firstName, sender.lastName].filter(Boolean).join(" ") || "Unknown";
+          senderName =
+            [sender.firstName, sender.lastName].filter(Boolean).join(" ") ||
+            "Unknown";
         }
       } catch {}
+
+      // Extract media attachments using on-demand proxy URLs (no download at receive time)
+      const attachments: ParsedAttachment[] = [];
+      if (hasMedia && connection?.client) {
+        try {
+          this.extractMediaAttachments(
+            message,
+            accountId,
+            chatId,
+            attachments,
+          );
+        } catch (mediaError: any) {
+          console.warn(
+            `[TelegramClientManager] Media extraction failed: ${mediaError.message}`,
+          );
+        }
+      }
+
+      // Extract forwarded message info
+      let forwardedFrom: { name?: string; username?: string; date?: number } | undefined;
+      if (message.fwdFrom) {
+        const fwd = message.fwdFrom as Api.MessageFwdHeader;
+        forwardedFrom = {
+          name: fwd.fromName ?? undefined,
+          date: fwd.date,
+        };
+      }
 
       await processIncomingMessageFull(tenantId, {
         channel: "telegram_personal",
@@ -432,9 +467,107 @@ class TelegramClientManager {
           isGroup: message.isGroup,
           isChannel: message.isChannel,
         },
+        ...(attachments.length > 0 && { attachments }),
+        ...(forwardedFrom && { forwardedFrom }),
       });
     } catch (error: any) {
       console.error("[TelegramClientManager] Error handling message:", error.message);
+    }
+  }
+
+  /**
+   * Builds attachment metadata from a gramjs message, using on-demand proxy URLs.
+   * No file is downloaded at this point — the frontend fetches via
+   * GET /api/telegram-personal/media/:accountId/:chatId/:msgId
+   */
+  private extractMediaAttachments(
+    message: Api.Message,
+    accountId: string,
+    chatId: string,
+    attachments: ParsedAttachment[],
+  ): void {
+    const media = message.media;
+    if (!media || media instanceof Api.MessageMediaEmpty) return;
+
+    const proxyBase = `/api/telegram-personal/media/${encodeURIComponent(accountId)}/${encodeURIComponent(chatId)}/${message.id}`;
+
+    if (media instanceof Api.MessageMediaPhoto) {
+      const photo = media.photo;
+      if (!photo || photo instanceof Api.PhotoEmpty) return;
+      const p = photo as Api.Photo;
+      const largest = p.sizes?.[p.sizes.length - 1] as any;
+      attachments.push({
+        type: "image",
+        url: proxyBase,
+        mimeType: "image/jpeg",
+        width: largest?.w,
+        height: largest?.h,
+      });
+      return;
+    }
+
+    if (media instanceof Api.MessageMediaDocument) {
+      const doc = media.document;
+      if (!doc || doc instanceof Api.DocumentEmpty) return;
+      const document = doc as Api.Document;
+      const attrs = document.attributes;
+      const fileSize = Number(document.size);
+      const mimeType = document.mimeType;
+
+      const filenameAttr = attrs.find(
+        (a) => a instanceof Api.DocumentAttributeFilename,
+      ) as Api.DocumentAttributeFilename | undefined;
+      const audioAttr = attrs.find(
+        (a) => a instanceof Api.DocumentAttributeAudio,
+      ) as Api.DocumentAttributeAudio | undefined;
+      const videoAttr = attrs.find(
+        (a) => a instanceof Api.DocumentAttributeVideo,
+      ) as Api.DocumentAttributeVideo | undefined;
+      const stickerAttr = attrs.find(
+        (a) => a instanceof Api.DocumentAttributeSticker,
+      );
+
+      let attachmentType: ParsedAttachment["type"] = "document";
+      if (stickerAttr) {
+        attachmentType = "sticker";
+      } else if (audioAttr?.voice) {
+        attachmentType = "voice";
+      } else if (audioAttr) {
+        attachmentType = "audio";
+      } else if (videoAttr?.roundMessage) {
+        attachmentType = "video_note";
+      } else if (videoAttr) {
+        attachmentType = "video";
+      }
+
+      attachments.push({
+        type: attachmentType,
+        url: proxyBase,
+        mimeType,
+        fileName: filenameAttr?.fileName,
+        fileSize,
+        duration: audioAttr?.duration ?? videoAttr?.duration ?? undefined,
+        width: videoAttr?.w ?? undefined,
+        height: videoAttr?.h ?? undefined,
+      });
+      return;
+    }
+
+    if (media instanceof Api.MessageMediaPoll) {
+      const poll = media.poll;
+      const questionText =
+        typeof poll.question === "string"
+          ? poll.question
+          : (poll.question as any)?.text ?? "";
+      const options = poll.answers.map((a) => {
+        const txt = a.text;
+        return typeof txt === "string" ? txt : (txt as any)?.text ?? "";
+      });
+      attachments.push({
+        type: "poll",
+        pollQuestion: questionText,
+        pollOptions: options,
+      });
     }
   }
 
@@ -532,6 +665,67 @@ class TelegramClientManager {
       };
     } catch (error: any) {
       console.error(`[TelegramClientManager] Send error: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Sends a file (photo, document, audio, video, etc.) via gramjs sendFile.
+   * The file buffer is sent directly — no local storage needed.
+   * Returns the sent message ID which can be used to build a proxy URL.
+   */
+  async sendFileMessage(
+    tenantId: string,
+    channelId: string,
+    externalConversationId: string,
+    buffer: Buffer,
+    mimeType: string,
+    fileName: string,
+    caption: string,
+  ): Promise<{
+    success: boolean;
+    externalMessageId?: string;
+    accountId?: string;
+    error?: string;
+  }> {
+    const connection = this.findConnection(tenantId, channelId);
+    if (!connection?.connected) {
+      return { success: false, error: "Not connected" };
+    }
+
+    try {
+      const peerId = BigInt(externalConversationId);
+      let entity: any;
+      try {
+        entity = await connection.client.getEntity(peerId);
+      } catch {
+        entity = peerId;
+      }
+
+      const forceDocument = !mimeType.startsWith("image/") && !mimeType.startsWith("video/");
+
+      // gramjs CustomFile: (name, size, path, buffer)
+      const { CustomFile } = await import("telegram/client/uploads");
+      const file = new CustomFile(fileName, buffer.length, "", buffer);
+
+      const result = await connection.client.sendFile(entity, {
+        file,
+        caption: caption || undefined,
+        forceDocument,
+        workers: 1,
+      });
+
+      connection.lastActivity = new Date();
+      const msgId = result.id.toString();
+      console.log(`[TelegramClientManager] File sent to ${externalConversationId}, msgId=${msgId}`);
+
+      return {
+        success: true,
+        externalMessageId: msgId,
+        accountId: connection.accountId,
+      };
+    } catch (error: any) {
+      console.error(`[TelegramClientManager] sendFileMessage error: ${error.message}`);
       return { success: false, error: error.message };
     }
   }

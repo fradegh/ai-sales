@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
+import multer from "multer";
 import { storage } from "../storage";
 import { VALID_INTENTS, TRAINING_POLICY_LIMITS } from "@shared/schema";
 import { requireAuth, requireOperator, requireAdmin, requirePermission } from "../middleware/rbac";
@@ -11,6 +12,13 @@ import { WhatsAppPersonalAdapter } from "../services/whatsapp-personal-adapter";
 import { recordTrainingSample, getTrainingSamples, exportTrainingSamples, type TrainingOutcome } from "../services/training-sample-service";
 import { addToLearningQueue } from "../services/learning-score-service";
 import { sanitizeString } from "../utils/sanitizer";
+import type { ParsedAttachment } from "../services/channel-adapter";
+
+// Multer instance for optional file uploads — memory storage, max 50 MB
+const messageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
 
 const router = Router();
 
@@ -187,104 +195,201 @@ router.get("/api/conversations/:id/messages", requireAuth, requirePermission("VI
   }
 });
 
-router.post("/api/conversations/:id/messages", requireAuth, requirePermission("MANAGE_CONVERSATIONS"), conversationRateLimiter, tenantConversationLimiter, async (req: Request, res: Response) => {
-  try {
-    const { content, role = "owner" } = req.body;
-    
-    if (!content || typeof content !== "string" || content.trim().length === 0) {
-      return res.status(400).json({ error: "Message content is required" });
-    }
-    
-    if (!req.userId || req.userId === "system") {
-      return res.status(403).json({ error: "User authentication required" });
-    }
-    const msgUser = await getUserForConversations(req.userId);
-    if (!msgUser?.tenantId) {
-      return res.status(403).json({ error: "User not associated with a tenant" });
-    }
+router.post(
+  "/api/conversations/:id/messages",
+  requireAuth,
+  requirePermission("MANAGE_CONVERSATIONS"),
+  messageUpload.single("file"),
+  conversationRateLimiter,
+  tenantConversationLimiter,
+  async (req: Request, res: Response) => {
+    try {
+      const content = (req.body.content ?? "") as string;
+      const role = (req.body.role ?? "owner") as string;
+      const uploadedFile = req.file;
 
-    const conversation = await storage.getConversationDetail(req.params.id);
-    if (!conversation || conversation.tenantId !== msgUser.tenantId) {
-      return res.status(404).json({ error: "Conversation not found" });
-    }
-    
-    const message = await storage.createMessage({
-      conversationId: req.params.id,
-      role,
-      content: content.trim(),
-      attachments: [],
-      metadata: {},
-    });
+      if (!uploadedFile && (!content || typeof content !== "string" || content.trim().length === 0)) {
+        return res.status(400).json({ error: "Message content or file is required" });
+      }
 
-    await storage.updateConversation(req.params.id, { unreadCount: 0 });
+      if (!req.userId || req.userId === "system") {
+        return res.status(403).json({ error: "User authentication required" });
+      }
+      const msgUser = await getUserForConversations(req.userId);
+      if (!msgUser?.tenantId) {
+        return res.status(403).json({ error: "User not associated with a tenant" });
+      }
 
-    if (role === "owner" && conversation.messages.length > 0) {
-      const customerMessages = conversation.messages.filter(m => m.role === "customer");
+      const conversation = await storage.getConversationDetail(req.params.id);
+      if (!conversation || conversation.tenantId !== msgUser.tenantId) {
+        return res.status(404).json({ error: "Conversation not found" });
+      }
+
+      // Resolve effective channel type before sending
+      const customerMessages = conversation.messages.filter((m) => m.role === "customer");
       const lastCustomerMsg = customerMessages[customerMessages.length - 1];
-      const channelType = (lastCustomerMsg?.metadata as any)?.channel;
-      
+      const channelType = (lastCustomerMsg?.metadata as any)?.channel as string | undefined;
       let effectiveChannelType = channelType;
       if (!effectiveChannelType && conversation.channelId) {
-        const channel = await storage.getChannel(conversation.channelId);
-        effectiveChannelType = channel?.type;
-        console.log(`[OutboundHandler] Channel type from DB: ${effectiveChannelType}`);
+        const ch = await storage.getChannel(conversation.channelId);
+        effectiveChannelType = ch?.type;
       }
-      
-      console.log(`[OutboundHandler] Sending message. Channel: ${effectiveChannelType}, ChannelId: ${conversation.channelId}, CustomerId: ${conversation.customer?.id}, CustomerExternalId: ${conversation.customer?.externalId}, LastMsgMeta: ${JSON.stringify(lastCustomerMsg?.metadata)}`);
-      
-      if (effectiveChannelType === "whatsapp_personal" && conversation.customer) {
-        let recipientJid = conversation.customer.externalId;
-        if (!recipientJid.includes("@")) {
-          recipientJid = `${recipientJid}@s.whatsapp.net`;
-        }
-        
-        try {
-          const adapter = new WhatsAppPersonalAdapter(conversation.tenantId);
-          const sendResult = await adapter.sendMessage(recipientJid, content.trim());
-          
-          if (sendResult.success) {
-            console.log(`[OutboundHandler] WhatsApp message sent: ${sendResult.externalMessageId}`);
-          } else {
-            console.error(`[OutboundHandler] WhatsApp send failed: ${sendResult.error}`);
-          }
-        } catch (sendError: any) {
-          console.error(`[OutboundHandler] WhatsApp send error:`, sendError.message);
-        }
-      }
-      
-      const effectiveChannelId = conversation.channelId || (lastCustomerMsg?.metadata as any)?.channelId;
-      
-      if (effectiveChannelType === "telegram_personal" && conversation.customer && effectiveChannelId) {
-        try {
-          const { telegramClientManager } = await import("../services/telegram-client-manager");
-          const recipientId = conversation.customer.externalId;
-          
-          console.log(`[OutboundHandler] Sending Telegram message to ${recipientId} via channel ${effectiveChannelId}`);
-          
-          const sendResult = await telegramClientManager.sendMessage(
-            conversation.tenantId,
-            effectiveChannelId,
-            recipientId,
-            content.trim()
-          );
-          
-          if (sendResult.success) {
-            console.log(`[OutboundHandler] Telegram message sent: ${sendResult.externalMessageId}`);
-          } else {
-            console.error(`[OutboundHandler] Telegram send failed: ${sendResult.error}`);
-          }
-        } catch (sendError: any) {
-          console.error(`[OutboundHandler] Telegram send error:`, sendError.message);
-        }
-      }
-    }
+      const effectiveChannelId =
+        conversation.channelId || ((lastCustomerMsg?.metadata as any)?.channelId as string | undefined);
 
-    res.status(201).json(message);
-  } catch (error) {
-    console.error("Error sending message:", error);
-    res.status(500).json({ error: "Failed to send message" });
-  }
-});
+      console.log(
+        `[OutboundHandler] channel=${effectiveChannelType}, channelId=${effectiveChannelId}, hasFile=${!!uploadedFile}`,
+      );
+
+      // ── Media send path ────────────────────────────────────────────────────
+      let outboundAttachment: ParsedAttachment | undefined;
+
+      if (uploadedFile && role === "owner" && conversation.messages.length > 0) {
+        const { buffer, mimetype, originalname, size } = uploadedFile;
+
+        if (effectiveChannelType === "telegram_personal" && conversation.customer && effectiveChannelId) {
+          try {
+            const { telegramClientManager } = await import("../services/telegram-client-manager");
+            const recipientId = conversation.customer.externalId;
+
+            const sendResult = await telegramClientManager.sendFileMessage(
+              conversation.tenantId,
+              effectiveChannelId,
+              recipientId,
+              buffer,
+              mimetype,
+              originalname,
+              content.trim(),
+            );
+
+            if (sendResult.success && sendResult.externalMessageId) {
+              const accountId = sendResult.accountId ?? effectiveChannelId;
+              const msgId = sendResult.externalMessageId;
+              outboundAttachment = buildAttachmentMeta(mimetype, originalname, size, {
+                url: `/api/telegram-personal/media/${encodeURIComponent(accountId)}/${encodeURIComponent(recipientId)}/${msgId}`,
+              });
+              console.log(`[OutboundHandler] Telegram file sent: msgId=${msgId}`);
+            } else {
+              console.error(`[OutboundHandler] Telegram file send failed: ${sendResult.error}`);
+            }
+          } catch (sendError: any) {
+            console.error(`[OutboundHandler] Telegram file send error:`, sendError.message);
+          }
+        }
+
+        if (effectiveChannelType === "telegram" && conversation.customer) {
+          try {
+            const { TelegramAdapter } = await import("../services/telegram-adapter");
+            const adapter = new TelegramAdapter();
+            const recipientId = conversation.customer.externalId;
+
+            const sendResult = await adapter.sendMediaMessage(
+              recipientId,
+              buffer,
+              mimetype,
+              originalname,
+              content.trim(),
+            );
+
+            if (sendResult.success) {
+              outboundAttachment = buildAttachmentMeta(mimetype, originalname, size, {
+                fileId: sendResult.fileId,
+                url: sendResult.fileId ? `/api/telegram/file/${sendResult.fileId}` : undefined,
+              });
+              console.log(`[OutboundHandler] Telegram Bot API file sent: fileId=${sendResult.fileId}`);
+            } else {
+              console.error(`[OutboundHandler] Telegram Bot API file send failed: ${sendResult.error}`);
+            }
+          } catch (sendError: any) {
+            console.error(`[OutboundHandler] Telegram Bot API file send error:`, sendError.message);
+          }
+        }
+      }
+
+      // ── Save message to DB ─────────────────────────────────────────────────
+      const messageContent = uploadedFile
+        ? content.trim() // caption (may be empty)
+        : content.trim();
+
+      const message = await storage.createMessage({
+        conversationId: req.params.id,
+        role,
+        content: messageContent,
+        attachments: outboundAttachment ? [outboundAttachment] : [],
+        metadata: {},
+      });
+
+      await storage.updateConversation(req.params.id, { unreadCount: 0 });
+
+      // ── Text send path (no file, or file already handled above) ───────────
+      if (!uploadedFile && role === "owner" && conversation.messages.length > 0) {
+        if (effectiveChannelType === "whatsapp_personal" && conversation.customer) {
+          let recipientJid = conversation.customer.externalId;
+          if (!recipientJid.includes("@")) recipientJid = `${recipientJid}@s.whatsapp.net`;
+          try {
+            const adapter = new WhatsAppPersonalAdapter(conversation.tenantId);
+            const sendResult = await adapter.sendMessage(recipientJid, content.trim());
+            if (sendResult.success) {
+              console.log(`[OutboundHandler] WhatsApp message sent: ${sendResult.externalMessageId}`);
+            } else {
+              console.error(`[OutboundHandler] WhatsApp send failed: ${sendResult.error}`);
+            }
+          } catch (sendError: any) {
+            console.error(`[OutboundHandler] WhatsApp send error:`, sendError.message);
+          }
+        }
+
+        if (effectiveChannelType === "telegram_personal" && conversation.customer && effectiveChannelId) {
+          try {
+            const { telegramClientManager } = await import("../services/telegram-client-manager");
+            const recipientId = conversation.customer.externalId;
+            const sendResult = await telegramClientManager.sendMessage(
+              conversation.tenantId,
+              effectiveChannelId,
+              recipientId,
+              content.trim(),
+            );
+            if (sendResult.success) {
+              console.log(`[OutboundHandler] Telegram message sent: ${sendResult.externalMessageId}`);
+            } else {
+              console.error(`[OutboundHandler] Telegram send failed: ${sendResult.error}`);
+            }
+          } catch (sendError: any) {
+            console.error(`[OutboundHandler] Telegram send error:`, sendError.message);
+          }
+        }
+      }
+
+      res.status(201).json(message);
+    } catch (error) {
+      console.error("Error sending message:", error);
+      res.status(500).json({ error: "Failed to send message" });
+    }
+  },
+);
+
+/** Maps MIME type to a ParsedAttachment, merging any extra fields (url, fileId). */
+function buildAttachmentMeta(
+  mimeType: string,
+  fileName: string,
+  fileSize: number,
+  extra: Partial<ParsedAttachment>,
+): ParsedAttachment {
+  const mime = mimeType.toLowerCase();
+  let type: ParsedAttachment["type"] = "document";
+  if (mime.startsWith("image/")) type = "image";
+  else if (mime.startsWith("video/")) type = "video";
+  else if (mime === "audio/ogg") type = "voice";
+  else if (mime.startsWith("audio/")) type = "audio";
+
+  return {
+    type,
+    mimeType,
+    fileName,
+    fileSize,
+    ...extra,
+  };
+}
 
 // ============ AI SUGGESTION ROUTES ============
 

@@ -5,6 +5,7 @@ import { MaxAdapter } from "./max-adapter";
 import { TelegramAdapter } from "./telegram-adapter";
 import { whatsappAdapter } from "./whatsapp-adapter";
 import { WhatsAppPersonalAdapter } from "./whatsapp-personal-adapter";
+import { maxPersonalAdapter } from "./max-personal-adapter";
 
 // ============ Channel Adapter Interface ============
 
@@ -15,6 +16,21 @@ export interface ChannelSendResult {
   timestamp?: Date;
 }
 
+export interface ParsedAttachment {
+  type: "image" | "voice" | "audio" | "video" | "video_note" | "document" | "sticker" | "poll";
+  url?: string;
+  fileId?: string;
+  mimeType?: string;
+  fileName?: string;
+  fileSize?: number;
+  duration?: number;
+  width?: number;
+  height?: number;
+  thumbnail?: string;
+  pollQuestion?: string;
+  pollOptions?: string[];
+}
+
 export interface ParsedIncomingMessage {
   externalMessageId: string;
   externalConversationId: string;
@@ -23,6 +39,12 @@ export interface ParsedIncomingMessage {
   timestamp: Date;
   channel: ChannelType;
   metadata?: Record<string, unknown>;
+  attachments?: ParsedAttachment[];
+  forwardedFrom?: {
+    name?: string;
+    username?: string;
+    date?: number;
+  };
 }
 
 export interface WebhookVerifyResult {
@@ -62,6 +84,7 @@ const CHANNEL_FLAG_MAP: Record<ChannelType, FeatureFlagName | null> = {
   whatsapp: "WHATSAPP_CHANNEL_ENABLED",
   whatsapp_personal: "WHATSAPP_PERSONAL_CHANNEL_ENABLED",
   max: "MAX_CHANNEL_ENABLED",
+  max_personal: "MAX_PERSONAL_CHANNEL_ENABLED",
 };
 
 class ChannelRegistry {
@@ -462,6 +485,7 @@ channelRegistry.register(new TelegramAdapter());
 channelRegistry.register(whatsappAdapter);
 channelRegistry.register(new MaxAdapter());
 channelRegistry.register(new WhatsAppPersonalAdapter());
+channelRegistry.register(maxPersonalAdapter);
 
 export {
   MockChannelAdapter,
@@ -470,4 +494,5 @@ export {
   TelegramAdapter,
   whatsappAdapter,
   WhatsAppPersonalAdapter,
+  maxPersonalAdapter,
 };

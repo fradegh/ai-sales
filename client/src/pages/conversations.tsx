@@ -102,7 +102,13 @@ export default function Conversations() {
   });
 
   const sendManualMutation = useMutation({
-    mutationFn: async (content: string) => {
+    mutationFn: async ({ content, file }: { content: string; file?: File }) => {
+      if (file) {
+        const formData = new FormData();
+        formData.append("content", content);
+        formData.append("file", file);
+        return apiRequest("POST", `/api/conversations/${selectedId}/messages`, formData);
+      }
       return apiRequest("POST", `/api/conversations/${selectedId}/messages`, { content });
     },
     onSuccess: () => {
@@ -305,7 +311,7 @@ export default function Conversations() {
               onEdit={(id, text) => editMutation.mutate({ suggestionId: id, editedText: text })}
               onReject={(id) => rejectMutation.mutate(id)}
               onEscalate={(id) => escalateMutation.mutate(id)}
-              onSendManual={(content) => sendManualMutation.mutate(content)}
+              onSendManual={(content, file) => sendManualMutation.mutate({ content, file })}
               onPhoneClick={handlePhoneClick}
               isLoading={detailLoading}
             />

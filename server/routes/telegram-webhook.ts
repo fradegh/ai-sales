@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { TelegramAdapter, telegramAdapter } from "../services/telegram-adapter";
 import { featureFlagService } from "../services/feature-flags";
 import { auditLog } from "../services/audit-log";
+import { processIncomingMessageFull } from "../services/inbound-message-handler";
 
 const processedUpdateIds = new Set<number>();
 const MAX_PROCESSED_IDS = 10000;
@@ -71,7 +72,7 @@ export async function telegramWebhookHandler(
     }
 
     console.log(
-      `[TelegramWebhook] Received message from ${parsed.externalUserId} in chat ${parsed.externalConversationId}: "${parsed.text.substring(0, 50)}..."`
+      `[TelegramWebhook] Received message from ${parsed.externalUserId} in chat ${parsed.externalConversationId}: "${parsed.text.substring(0, 50)}"`
     );
 
     await auditLog.log(
@@ -85,9 +86,13 @@ export async function telegramWebhookHandler(
         chatId: parsed.externalConversationId,
         userId: parsed.externalUserId,
         textPreview: parsed.text.substring(0, 100),
+        attachmentCount: parsed.attachments?.length ?? 0,
         metadata: parsed.metadata,
       }
     );
+
+    // Process through the standard inbound pipeline (save + AI suggestion)
+    await processIncomingMessageFull("", parsed);
 
     res.status(200).json({
       ok: true,

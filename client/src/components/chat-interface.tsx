@@ -23,6 +23,9 @@ import {
   Info,
   Star,
   ArrowDown,
+  Download,
+  BarChart2,
+  Paperclip,
 } from "lucide-react";
 import { CsatDialog } from "@/components/csat-dialog";
 import { cn } from "@/lib/utils";
@@ -37,7 +40,7 @@ interface ChatInterfaceProps {
   onEdit: (suggestionId: string, editedText: string) => void;
   onReject: (suggestionId: string) => void;
   onEscalate: (suggestionId: string) => void;
-  onSendManual: (content: string) => void;
+  onSendManual: (content: string, file?: File) => void;
   onPhoneClick?: (phoneNumber: string) => void;
   isLoading?: boolean;
 }
@@ -143,6 +146,202 @@ function parseMessageWithPhones(
   return parts.length > 0 ? parts : [content];
 }
 
+// ============ Attachment types (mirrors server ParsedAttachment) ============
+
+interface MessageAttachment {
+  type: "image" | "voice" | "audio" | "video" | "video_note" | "document" | "sticker" | "poll";
+  url?: string;
+  fileId?: string;
+  mimeType?: string;
+  fileName?: string;
+  fileSize?: number;
+  duration?: number;
+  width?: number;
+  height?: number;
+  thumbnail?: string;
+  pollQuestion?: string;
+  pollOptions?: string[];
+}
+
+interface ForwardedFrom {
+  name?: string;
+  username?: string;
+  date?: number;
+}
+
+function formatFileSize(bytes?: number): string {
+  if (!bytes) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentRenderer({
+  attachments,
+  forwardedFrom,
+  isCustomer,
+}: {
+  attachments?: MessageAttachment[];
+  forwardedFrom?: ForwardedFrom;
+  isCustomer: boolean;
+}) {
+  if (!forwardedFrom && (!attachments || attachments.length === 0)) return null;
+
+  return (
+    <div className="mt-1 space-y-1.5">
+      {forwardedFrom && (
+        <div
+          className={cn(
+            "flex items-center gap-1 border-l-2 pl-2 text-xs opacity-70",
+            isCustomer ? "border-foreground/30" : "border-primary-foreground/40",
+          )}
+        >
+          <span className="font-medium">
+            Переслано{forwardedFrom.name ? ` от: ${forwardedFrom.name}` : ""}
+          </span>
+        </div>
+      )}
+      {attachments?.map((att, i) => {
+        if (att.type === "image") {
+          return att.url ? (
+            <img
+              key={i}
+              src={att.url}
+              alt="Изображение"
+              className="max-w-[240px] rounded-lg object-cover"
+              style={{ maxHeight: 320 }}
+            />
+          ) : (
+            <div key={i} className="text-xs opacity-60">📷 Фото недоступно</div>
+          );
+        }
+
+        if (att.type === "sticker") {
+          return att.url ? (
+            <img
+              key={i}
+              src={att.url}
+              alt="Стикер"
+              className="h-20 w-20 object-contain"
+            />
+          ) : (
+            <div key={i} className="text-xs opacity-60">🎭 Стикер</div>
+          );
+        }
+
+        if (att.type === "voice" || att.type === "audio") {
+          const label = att.type === "voice" ? "🎙 Голосовое" : "🎵 Аудио";
+          const subtitle = [
+            att.fileName,
+            att.duration ? `${att.duration}с` : undefined,
+            formatFileSize(att.fileSize),
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return att.url ? (
+            <div key={i} className="space-y-1">
+              <div className="text-xs opacity-70">
+                {label}
+                {subtitle && <span className="ml-1 opacity-60">{subtitle}</span>}
+              </div>
+              <audio controls src={att.url} className="h-9 w-full max-w-[240px]" preload="none" />
+            </div>
+          ) : (
+            <div key={i} className="text-xs opacity-60">
+              {label}
+              {subtitle && <span className="ml-1 opacity-60">{subtitle}</span>}
+            </div>
+          );
+        }
+
+        if (att.type === "video_note") {
+          return att.url ? (
+            <video
+              key={i}
+              controls
+              src={att.url}
+              className="h-32 w-32 rounded-full object-cover"
+              preload="none"
+            />
+          ) : (
+            <div key={i} className="text-xs opacity-60">📹 Видеосообщение</div>
+          );
+        }
+
+        if (att.type === "video") {
+          const subtitle = [
+            att.duration ? `${att.duration}с` : undefined,
+            att.width && att.height ? `${att.width}×${att.height}` : undefined,
+            formatFileSize(att.fileSize),
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return att.url ? (
+            <div key={i} className="space-y-1">
+              {subtitle && <div className="text-xs opacity-60">🎬 {subtitle}</div>}
+              <video
+                controls
+                src={att.url}
+                className="max-w-[240px] rounded-lg"
+                style={{ maxHeight: 320 }}
+                preload="none"
+              />
+            </div>
+          ) : (
+            <div key={i} className="text-xs opacity-60">🎬 Видео{subtitle ? ` · ${subtitle}` : ""}</div>
+          );
+        }
+
+        if (att.type === "document") {
+          const label = att.fileName || "Файл";
+          const subtitle = formatFileSize(att.fileSize);
+          return (
+            <a
+              key={i}
+              href={att.url || "#"}
+              download={att.fileName}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-opacity hover:opacity-80",
+                isCustomer ? "bg-background/30" : "bg-primary-foreground/10",
+              )}
+            >
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate max-w-[180px] font-medium">{label}</span>
+              {subtitle && <span className="shrink-0 text-xs opacity-60">{subtitle}</span>}
+            </a>
+          );
+        }
+
+        if (att.type === "poll") {
+          return (
+            <div
+              key={i}
+              className={cn(
+                "rounded-md px-3 py-2 text-sm space-y-1",
+                isCustomer ? "bg-background/30" : "bg-primary-foreground/10",
+              )}
+            >
+              <div className="flex items-center gap-1.5 font-medium">
+                <BarChart2 className="h-3.5 w-3.5 shrink-0" />
+                <span>{att.pollQuestion || "Опрос"}</span>
+              </div>
+              {att.pollOptions?.map((option, j) => (
+                <div key={j} className="text-xs opacity-70 pl-5">
+                  • {option}
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+
 export function ChatInterface({
   conversation,
   onApprove,
@@ -159,9 +358,12 @@ export function ChatInterface({
   const [showSources, setShowSources] = useState(false);
   const [showCsatDialog, setShowCsatDialog] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevConversationId = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     if (messagesEndRef.current) {
@@ -216,11 +418,31 @@ export function ChatInterface({
   const usedSources = (suggestion?.usedSources || []) as UsedSource[];
   const explanations = (Array.isArray(suggestion?.explanations) ? suggestion.explanations : []) as string[];
 
-  const handleSendManual = () => {
-    if (manualMessage.trim()) {
-      onSendManual(manualMessage);
-      setManualMessage("");
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (!file) return;
+    setSelectedFile(file);
+    if (file.type.startsWith("image/")) {
+      const url = URL.createObjectURL(file);
+      setFilePreviewUrl(url);
+    } else {
+      setFilePreviewUrl(null);
     }
+    // Reset input so same file can be re-selected
+    e.target.value = "";
+  };
+
+  const clearFile = () => {
+    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    setSelectedFile(null);
+    setFilePreviewUrl(null);
+  };
+
+  const handleSendManual = () => {
+    if (!manualMessage.trim() && !selectedFile) return;
+    onSendManual(manualMessage, selectedFile ?? undefined);
+    setManualMessage("");
+    clearFile();
   };
 
   const handleApproveEdit = () => {
@@ -318,9 +540,26 @@ export function ChatInterface({
                       : "bg-accent"
                   )}
                 >
-                  <p className="text-sm whitespace-pre-wrap">
-                    {parseMessageWithPhones(message.content, onPhoneClick)}
-                  </p>
+                  {message.content && (
+                    <p className="text-sm whitespace-pre-wrap">
+                      {parseMessageWithPhones(message.content, onPhoneClick)}
+                    </p>
+                  )}
+                  <AttachmentRenderer
+                    attachments={
+                      Array.isArray(message.attachments)
+                        ? (message.attachments as MessageAttachment[])
+                        : undefined
+                    }
+                    forwardedFrom={
+                      message.metadata &&
+                      typeof message.metadata === "object" &&
+                      "forwardedFrom" in message.metadata
+                        ? (message.metadata.forwardedFrom as ForwardedFrom)
+                        : undefined
+                    }
+                    isCustomer={message.role === "customer"}
+                  />
                   <span
                     className={cn(
                       "mt-1 block text-xs opacity-70",
@@ -565,7 +804,60 @@ export function ChatInterface({
 
       {/* Manual Message Input */}
       <div className="border-t p-4">
+        {/* File preview strip */}
+        {selectedFile && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border bg-muted/50 p-2">
+            {filePreviewUrl ? (
+              <img
+                src={filePreviewUrl}
+                alt="preview"
+                className="h-14 w-14 rounded object-cover shrink-0"
+              />
+            ) : (
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded bg-muted">
+                <Paperclip className="h-5 w-5 text-muted-foreground" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{selectedFile.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {selectedFile.size < 1024 * 1024
+                  ? `${(selectedFile.size / 1024).toFixed(1)} KB`
+                  : `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB`}
+              </p>
+            </div>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="shrink-0 h-7 w-7"
+              onClick={clearFile}
+              data-testid="button-clear-file"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+
         <div className="flex gap-2">
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+            className="hidden"
+            onChange={handleFileSelect}
+            data-testid="input-file-upload"
+          />
+          <Button
+            size="icon"
+            variant="ghost"
+            className="shrink-0"
+            onClick={() => fileInputRef.current?.click()}
+            title="Прикрепить файл"
+            data-testid="button-attach-file"
+          >
+            <Paperclip className="h-4 w-4" />
+          </Button>
           <Textarea
             placeholder="Введите сообщение вручную..."
             value={manualMessage}
@@ -582,7 +874,7 @@ export function ChatInterface({
           <Button
             size="icon"
             onClick={handleSendManual}
-            disabled={!manualMessage.trim()}
+            disabled={!manualMessage.trim() && !selectedFile}
             data-testid="button-send-manual"
           >
             <Send className="h-4 w-4" />
