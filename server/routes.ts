@@ -1607,14 +1607,16 @@ export async function registerRoutes(
           return res.status(403).json({ error: "User not associated with a tenant" });
         }
 
-        const { customerName, customerPhone, message } = req.body as {
+        const { customerName, customerPhone, message, imageBase64, imageMimeType } = req.body as {
           customerName?: string;
           customerPhone?: string;
           message?: string;
+          imageBase64?: string;
+          imageMimeType?: string;
         };
 
-        if (!customerName || !customerPhone || !message) {
-          return res.status(400).json({ error: "Missing required fields: customerName, customerPhone, message" });
+        if (!customerName || !customerPhone || (!message && !imageBase64)) {
+          return res.status(400).json({ error: "Missing required fields: customerName, customerPhone, and message or image" });
         }
 
         const externalUserId = customerPhone.replace(/\D/g, "") || `test_${Date.now()}`;
@@ -1625,13 +1627,22 @@ export async function registerRoutes(
           externalMessageId: `test_${Date.now()}_${Math.random().toString(36).substring(7)}`,
           externalConversationId: externalUserId,
           externalUserId,
-          text: message,
+          text: message || "",
           timestamp: new Date(),
           channel: "mock" as const,
           metadata: {
             firstName: customerName,
             phone: customerPhone,
           },
+          attachments: imageBase64
+            ? [
+                {
+                  type: "image" as const,
+                  url: `data:${imageMimeType || "image/jpeg"};base64,${imageBase64}`,
+                  mimeType: imageMimeType || "image/jpeg",
+                },
+              ]
+            : undefined,
         };
 
         await processIncomingMessageFull(user.tenantId, parsed);

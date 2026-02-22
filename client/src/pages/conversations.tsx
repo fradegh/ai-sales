@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ConversationList } from "@/components/conversation-list";
 import { ChatInterface } from "@/components/chat-interface";
@@ -30,6 +30,9 @@ export default function Conversations() {
   const [testName, setTestName] = useState("");
   const [testPhone, setTestPhone] = useState("");
   const [testMessage, setTestMessage] = useState("");
+  const [testImage, setTestImage] = useState<File | null>(null);
+  const [testImagePreviewUrl, setTestImagePreviewUrl] = useState<string | null>(null);
+  const testImageInputRef = useRef<HTMLInputElement>(null);
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
 
   // "Новый диалог" modal state
@@ -305,8 +308,15 @@ export default function Conversations() {
     },
   });
 
+  const clearTestImage = () => {
+    if (testImagePreviewUrl) URL.revokeObjectURL(testImagePreviewUrl);
+    setTestImage(null);
+    setTestImagePreviewUrl(null);
+    if (testImageInputRef.current) testImageInputRef.current.value = "";
+  };
+
   const simulateMessageMutation = useMutation({
-    mutationFn: async (data: { customerName: string; customerPhone: string; message: string }) => {
+    mutationFn: async (data: { customerName: string; customerPhone: string; message: string; imageBase64?: string; imageMimeType?: string }) => {
       const res = await apiRequest("POST", "/api/test/simulate-message", data);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Ошибка создания диалога");
@@ -318,6 +328,7 @@ export default function Conversations() {
       setTestName("");
       setTestPhone("");
       setTestMessage("");
+      clearTestImage();
       toast({ title: "Тестовый диалог создан" });
       if (data.conversation?.id) {
         setSelectedId(data.conversation.id);
@@ -329,15 +340,31 @@ export default function Conversations() {
     },
   });
 
-  const handleSimulateSubmit = () => {
-    if (!testName.trim() || !testPhone.trim() || !testMessage.trim()) {
-      toast({ title: "Заполните все поля", variant: "destructive" });
+  const handleSimulateSubmit = async () => {
+    if (!testName.trim() || !testPhone.trim() || (!testMessage.trim() && !testImage)) {
+      toast({ title: "Заполните имя, телефон и сообщение (или прикрепите фото)", variant: "destructive" });
       return;
+    }
+    let imageBase64: string | undefined;
+    let imageMimeType: string | undefined;
+    if (testImage) {
+      imageMimeType = testImage.type || "image/jpeg";
+      imageBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          resolve(dataUrl.split(",")[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(testImage);
+      });
     }
     simulateMessageMutation.mutate({
       customerName: testName.trim(),
       customerPhone: testPhone.trim(),
       message: testMessage.trim(),
+      imageBase64,
+      imageMimeType,
     });
   };
 
@@ -362,7 +389,10 @@ export default function Conversations() {
       </div>
 
       {/* Test Dialog */}
-      <Dialog open={testDialogOpen} onOpenChange={setTestDialogOpen}>
+      <Dialog open={testDialogOpen} onOpenChange={(open) => {
+        if (!open) clearTestImage();
+        setTestDialogOpen(open);
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Создать тестовый диалог</DialogTitle>
@@ -388,16 +418,72 @@ export default function Conversations() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="test-message">Сообщение</Label>
-              <Input
+              <Textarea
                 id="test-message"
                 placeholder="WVWZZZ7MZ6V025007"
+                rows={3}
                 value={testMessage}
                 onChange={(e) => setTestMessage(e.target.value)}
+                onPaste={(e) => {
+                  const files = Array.from(e.clipboardData.files);
+                  const img = files.find((f) => f.type.startsWith("image/"));
+                  if (img) {
+                    e.preventDefault();
+                    if (testImagePreviewUrl) URL.revokeObjectURL(testImagePreviewUrl);
+                    setTestImage(img);
+                    setTestImagePreviewUrl(URL.createObjectURL(img));
+                  }
+                }}
               />
             </div>
+            {/* File picker */}
+            <input
+              ref={testImageInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0] ?? null;
+                if (!file) return;
+                if (testImagePreviewUrl) URL.revokeObjectURL(testImagePreviewUrl);
+                setTestImage(file);
+                setTestImagePreviewUrl(URL.createObjectURL(file));
+                e.target.value = "";
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-fit gap-2"
+              onClick={() => testImageInputRef.current?.click()}
+            >
+              📎 Прикрепить фото
+            </Button>
+            {/* Image preview */}
+            {testImage && testImagePreviewUrl && (
+              <div className="relative w-fit">
+                <img
+                  src={testImagePreviewUrl}
+                  alt="Превью"
+                  className="max-h-40 rounded-lg border object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={clearTestImage}
+                  className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground text-xs shadow"
+                  aria-label="Удалить фото"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              💡 Можно вставить фото из буфера обмена (Ctrl+V) в поле сообщения
+            </p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setTestDialogOpen(false)}>
+            <Button variant="outline" onClick={() => { clearTestImage(); setTestDialogOpen(false); }}>
               Отмена
             </Button>
             <Button onClick={handleSimulateSubmit} disabled={simulateMessageMutation.isPending}>

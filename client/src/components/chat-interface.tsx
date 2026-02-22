@@ -418,6 +418,18 @@ export function ChatInterface({
   const usedSources = (suggestion?.usedSources || []) as UsedSource[];
   const explanations = (Array.isArray(suggestion?.explanations) ? suggestion.explanations : []) as string[];
 
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData.files);
+    const imageFile = files.find((f) => f.type.startsWith("image/"));
+    if (imageFile) {
+      e.preventDefault();
+      if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+      setSelectedFile(imageFile);
+      setFilePreviewUrl(URL.createObjectURL(imageFile));
+    }
+    // No image in clipboard — let default text-paste proceed
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
     if (!file) return;
@@ -869,6 +881,7 @@ export function ChatInterface({
                 handleSendManual();
               }
             }}
+            onPaste={handlePaste}
             data-testid="textarea-manual-message"
           />
           <Button
@@ -880,6 +893,11 @@ export function ChatInterface({
             <Send className="h-4 w-4" />
           </Button>
         </div>
+        {!selectedFile && (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            💡 Вставьте фото из буфера обмена (Ctrl+V) или нажмите <Paperclip className="inline h-3 w-3" />
+          </p>
+        )}
       </div>
     </div>
   );
