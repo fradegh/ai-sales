@@ -1931,9 +1931,19 @@ router.get(
       }
       const { tenantId } = user[0];
 
-      const account = await db.query.maxPersonalAccounts.findFirst({
-        where: eq(maxPersonalAccounts.tenantId, tenantId),
-      });
+      let account: typeof maxPersonalAccounts.$inferSelect | undefined;
+      try {
+        account = await db.query.maxPersonalAccounts.findFirst({
+          where: eq(maxPersonalAccounts.tenantId, tenantId),
+        });
+      } catch (dbErr: any) {
+        // Table may not exist yet if the migration hasn't been applied
+        if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
+          console.warn("[Admin] max_personal_accounts table not found — migration pending");
+          return res.json({ connected: false });
+        }
+        throw dbErr;
+      }
 
       if (!account) {
         return res.json({ connected: false });
@@ -2015,9 +2025,18 @@ router.post(
       }
 
       // 4. Upsert record
-      const existing = await db.query.maxPersonalAccounts.findFirst({
-        where: eq(maxPersonalAccounts.tenantId, tenantId),
-      });
+      let existing: typeof maxPersonalAccounts.$inferSelect | undefined;
+      try {
+        existing = await db.query.maxPersonalAccounts.findFirst({
+          where: eq(maxPersonalAccounts.tenantId, tenantId),
+        });
+      } catch (dbErr: any) {
+        if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
+          console.warn("[Admin] max_personal_accounts table not found — migration pending");
+          return res.status(503).json({ error: "MAX Personal feature not yet available. Run database migrations." });
+        }
+        throw dbErr;
+      }
 
       if (existing) {
         await db
@@ -2069,9 +2088,18 @@ router.delete(
       }
       const { tenantId } = userRow[0];
 
-      const account = await db.query.maxPersonalAccounts.findFirst({
-        where: eq(maxPersonalAccounts.tenantId, tenantId),
-      });
+      let account: typeof maxPersonalAccounts.$inferSelect | undefined;
+      try {
+        account = await db.query.maxPersonalAccounts.findFirst({
+          where: eq(maxPersonalAccounts.tenantId, tenantId),
+        });
+      } catch (dbErr: any) {
+        if (dbErr?.message?.includes("does not exist") || dbErr?.code === "42P01") {
+          console.warn("[Admin] max_personal_accounts table not found — migration pending");
+          return res.json({ success: true });
+        }
+        throw dbErr;
+      }
 
       if (account) {
         // Optionally clear webhook

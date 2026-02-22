@@ -1,8 +1,8 @@
 import { CryptoPay, Assets } from "@foile/crypto-pay-api";
 import { db } from "../db";
-import { plans, subscriptions, tenants } from "@shared/schema";
+import { plans, subscriptions, tenants, subscriptionGrants } from "@shared/schema";
 import type { Plan, Subscription, SubscriptionStatus, BillingStatus } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull, desc, sql } from "drizzle-orm";
 import crypto from "crypto";
 
 const CRYPTO_PAY_TOKEN = process.env.CRYPTO_PAY_API_TOKEN;
@@ -221,17 +221,34 @@ export async function getBillingStatus(tenantId: string): Promise<BillingStatus>
   const subscription = await getSubscriptionByTenant(tenantId);
   
   if (!subscription) {
+    // Even without a subscription record, check for an active grant
+    const [activeGrant] = await db
+      .select({ endsAt: subscriptionGrants.endsAt })
+      .from(subscriptionGrants)
+      .where(
+        and(
+          eq(subscriptionGrants.tenantId, tenantId),
+          isNull(subscriptionGrants.revokedAt),
+          sql`${subscriptionGrants.startsAt} <= NOW()`,
+          sql`${subscriptionGrants.endsAt} > NOW()`
+        )
+      )
+      .orderBy(desc(subscriptionGrants.endsAt))
+      .limit(1);
+
     return {
       hasSubscription: false,
-      status: null,
+      status: activeGrant ? "active" as SubscriptionStatus : null,
       plan: null,
       currentPeriodEnd: null,
       cancelAtPeriodEnd: false,
-      canAccess: false,
+      canAccess: !!activeGrant,
       isTrial: false,
       trialEndsAt: null,
       trialDaysRemaining: null,
       hadTrial: false,
+      hasActiveGrant: !!activeGrant,
+      grantEndsAt: activeGrant?.endsAt ?? null,
     };
   }
 
@@ -264,9 +281,31 @@ export async function getBillingStatus(tenantId: string): Promise<BillingStatus>
     canAccess = canAccess && (!subscription.currentPeriodEnd || new Date(subscription.currentPeriodEnd) > now);
   }
 
+  // Check for an active subscription grant (manual comp by platform admin)
+  const [activeGrant] = await db
+    .select({ endsAt: subscriptionGrants.endsAt })
+    .from(subscriptionGrants)
+    .where(
+      and(
+        eq(subscriptionGrants.tenantId, tenantId),
+        isNull(subscriptionGrants.revokedAt),
+        sql`${subscriptionGrants.startsAt} <= NOW()`,
+        sql`${subscriptionGrants.endsAt} > NOW()`
+      )
+    )
+    .orderBy(desc(subscriptionGrants.endsAt))
+    .limit(1);
+
+  const hasActiveGrant = !!activeGrant;
+  const grantEndsAt = activeGrant?.endsAt ?? null;
+
+  if (hasActiveGrant) {
+    canAccess = true;
+  }
+
   return {
     hasSubscription: true,
-    status: subscription.status as SubscriptionStatus,
+    status: hasActiveGrant ? "active" as SubscriptionStatus : subscription.status as SubscriptionStatus,
     plan,
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd || false,
@@ -275,6 +314,8 @@ export async function getBillingStatus(tenantId: string): Promise<BillingStatus>
     trialEndsAt: subscription.trialEndsAt,
     trialDaysRemaining,
     hadTrial: subscription.hadTrial || false,
+    hasActiveGrant,
+    grantEndsAt,
   };
 }
 
