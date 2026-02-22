@@ -75,14 +75,17 @@ class WebSocketClient {
     if (type === "new_message") {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations", data.conversationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/channel-counts"] });
     }
 
     if (type === "new_conversation") {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/channel-counts"] });
     }
 
     if (type === "conversation_update") {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/channel-counts"] });
       if (data.conversationId) {
         queryClient.invalidateQueries({ queryKey: ["/api/conversations", data.conversationId] });
       }
@@ -91,6 +94,7 @@ class WebSocketClient {
     if (type === "new_suggestion") {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations", data.conversationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/channel-counts"] });
     }
 
     const handlers = this.handlers.get(type);

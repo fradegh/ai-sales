@@ -56,6 +56,23 @@ router.get("/api/conversations", requireAuth, requirePermission("VIEW_CONVERSATI
   }
 });
 
+router.get("/api/conversations/channel-counts", requireAuth, requirePermission("VIEW_CONVERSATIONS"), async (req: Request, res: Response) => {
+  try {
+    if (!req.userId || req.userId === "system") {
+      return res.status(403).json({ error: "User authentication required" });
+    }
+    const user = await getUserForConversations(req.userId);
+    if (!user?.tenantId) {
+      return res.status(403).json({ error: "User not associated with a tenant" });
+    }
+    const counts = await storage.getConversationChannelCounts(user.tenantId);
+    res.json(counts);
+  } catch (error) {
+    console.error("Error fetching channel counts:", error);
+    res.status(500).json({ error: "Failed to fetch channel counts" });
+  }
+});
+
 router.get("/api/conversations/:id", requireAuth, requirePermission("VIEW_CONVERSATIONS"), async (req: Request, res: Response) => {
   try {
     if (!req.userId || req.userId === "system") {

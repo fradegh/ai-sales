@@ -407,9 +407,10 @@ export class DatabaseStorage implements IStorage {
 
   async getConversationsByTenant(tenantId: string): Promise<ConversationWithCustomer[]> {
     const rows = await db
-      .select({ conv: conversations, customer: customers })
+      .select({ conv: conversations, customer: customers, channel: channels })
       .from(conversations)
       .innerJoin(customers, eq(conversations.customerId, customers.id))
+      .leftJoin(channels, eq(conversations.channelId, channels.id))
       .where(eq(conversations.tenantId, tenantId))
       .orderBy(desc(conversations.lastMessageAt));
 
@@ -430,18 +431,20 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    return rows.map(({ conv, customer }) => ({
+    return rows.map(({ conv, customer, channel }) => ({
       ...conv,
       customer,
       lastMessage: lastMsgMap.get(conv.id),
+      channel: channel ?? undefined,
     }));
   }
 
   async getActiveConversations(tenantId: string): Promise<ConversationWithCustomer[]> {
     const rows = await db
-      .select({ conv: conversations, customer: customers })
+      .select({ conv: conversations, customer: customers, channel: channels })
       .from(conversations)
       .innerJoin(customers, eq(conversations.customerId, customers.id))
+      .leftJoin(channels, eq(conversations.channelId, channels.id))
       .where(and(
         eq(conversations.tenantId, tenantId),
         eq(conversations.status, "active")
@@ -464,11 +467,52 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    return rows.map(({ conv, customer }) => ({
+    return rows.map(({ conv, customer, channel }) => ({
       ...conv,
       customer,
       lastMessage: lastMsgMap.get(conv.id),
+      channel: channel ?? undefined,
     }));
+  }
+
+  async getConversationChannelCounts(tenantId: string): Promise<{ all: number; telegram?: number; max?: number; whatsapp?: number }> {
+    const tenantChannels = await db
+      .select({ type: channels.type })
+      .from(channels)
+      .where(eq(channels.tenantId, tenantId));
+
+    const connectedTypes = new Set(tenantChannels.map(c => c.type));
+
+    const hasTelegram = connectedTypes.has("telegram") || connectedTypes.has("telegram_personal");
+    const hasMax = connectedTypes.has("max") || connectedTypes.has("max_personal");
+    const hasWhatsApp = connectedTypes.has("whatsapp") || connectedTypes.has("whatsapp_personal");
+
+    const rows = await db
+      .select({ channelType: channels.type, unread: conversations.unreadCount })
+      .from(conversations)
+      .leftJoin(channels, eq(conversations.channelId, channels.id))
+      .where(eq(conversations.tenantId, tenantId));
+
+    let all = 0;
+    let telegram = 0;
+    let max = 0;
+    let whatsapp = 0;
+
+    for (const row of rows) {
+      const unread = row.unread ?? 0;
+      all += unread;
+      const t = row.channelType ?? "";
+      if (t === "telegram" || t === "telegram_personal") telegram += unread;
+      else if (t === "max" || t === "max_personal") max += unread;
+      else if (t === "whatsapp" || t === "whatsapp_personal") whatsapp += unread;
+    }
+
+    return {
+      all,
+      ...(hasTelegram ? { telegram } : {}),
+      ...(hasMax ? { max } : {}),
+      ...(hasWhatsApp ? { whatsapp } : {}),
+    };
   }
 
   async createConversation(data: InsertConversation & { lastMessageAt?: Date; createdAt?: Date }): Promise<Conversation> {

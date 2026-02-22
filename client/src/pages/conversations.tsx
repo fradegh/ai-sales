@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ConversationList } from "@/components/conversation-list";
 import { ChatInterface } from "@/components/chat-interface";
 import { CustomerCard } from "@/components/customer-card";
+import { ChannelTabs } from "@/components/channel-tabs";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { User, ArrowLeft } from "lucide-react";
 import type { ConversationWithCustomer, ConversationDetail } from "@shared/schema";
+import type { ChannelFilter } from "@/components/channel-tabs";
+
+const CHANNEL_FAMILY_TYPES: Record<Exclude<ChannelFilter, "all">, string[]> = {
+  telegram: ["telegram", "telegram_personal"],
+  max: ["max", "max_personal"],
+  whatsapp: ["whatsapp", "whatsapp_personal"],
+};
 
 export default function Conversations() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -20,6 +28,7 @@ export default function Conversations() {
   const [testName, setTestName] = useState("");
   const [testPhone, setTestPhone] = useState("");
   const [testMessage, setTestMessage] = useState("");
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const { toast } = useToast();
 
   const handleSelectConversation = async (id: string) => {
@@ -30,6 +39,7 @@ export default function Conversations() {
     try {
       await apiRequest("POST", `/api/conversations/${id}/read`);
       queryClient.invalidateQueries({ queryKey: ["/api/conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/channel-counts"] });
     } catch (error) {
       console.error("Failed to mark conversation as read:", error);
     }
@@ -42,6 +52,20 @@ export default function Conversations() {
   const { data: conversations, isLoading: conversationsLoading } = useQuery<ConversationWithCustomer[]>({
     queryKey: ["/api/conversations"],
   });
+
+  const { data: channelCounts } = useQuery<{ all: number; telegram?: number; max?: number; whatsapp?: number }>({
+    queryKey: ["/api/conversations/channel-counts"],
+  });
+
+  const filteredConversations = useMemo(() => {
+    if (!conversations) return [];
+    if (channelFilter === "all") return conversations;
+    const types = CHANNEL_FAMILY_TYPES[channelFilter];
+    return conversations.filter((c) => {
+      const channelType = c.channel?.type ?? "";
+      return types.includes(channelType);
+    });
+  }, [conversations, channelFilter]);
 
   const { data: conversationDetail, isLoading: detailLoading } = useQuery<ConversationDetail>({
     queryKey: ["/api/conversations", selectedId],
@@ -211,8 +235,13 @@ export default function Conversations() {
     <div className="flex h-full overflow-hidden">
       {/* Conversation List - hidden on mobile when chat is open */}
       <div className={`w-80 shrink-0 border-r flex flex-col overflow-hidden ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
+        <ChannelTabs
+          activeFilter={channelFilter}
+          onFilterChange={setChannelFilter}
+          counts={channelCounts ?? { all: 0 }}
+        />
         <ConversationList
-          conversations={conversations || []}
+          conversations={filteredConversations}
           selectedId={selectedId || undefined}
           onSelect={handleSelectConversation}
           onDelete={(id) => deleteConversationMutation.mutate(id)}

@@ -109,6 +109,7 @@ export interface IStorage {
   getConversationDetail(id: string): Promise<ConversationDetail | undefined>;
   getConversationsByTenant(tenantId: string): Promise<ConversationWithCustomer[]>;
   getActiveConversations(tenantId: string): Promise<ConversationWithCustomer[]>;
+  getConversationChannelCounts(tenantId: string): Promise<{ all: number; telegram?: number; max?: number; whatsapp?: number }>;
   createConversation(conversation: InsertConversation & { lastMessageAt?: Date; createdAt?: Date }): Promise<Conversation>;
   updateConversation(id: string, data: Partial<InsertConversation>): Promise<Conversation | undefined>;
   deleteConversation(id: string): Promise<boolean>;

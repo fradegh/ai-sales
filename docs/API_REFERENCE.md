@@ -652,7 +652,23 @@ List conversations.
 
 - **Auth:** `requireAuth`, `requirePermission("VIEW_CONVERSATIONS")`
 - **Query:** `?status=active` (optional)
-- **Response 200:** `ConversationWithCustomer[]`
+- **Response 200:** `ConversationWithCustomer[]` — each item now includes `channel?: Channel` (left-joined)
+
+#### GET `/api/conversations/channel-counts`
+
+Unread message counts grouped by channel family, for rendering filter tabs.
+
+- **Auth:** `requireAuth`, `requirePermission("VIEW_CONVERSATIONS")`
+- **Response 200:**
+```json
+{
+  "all": 12,
+  "telegram": 5,
+  "max": 3,
+  "whatsapp": 4
+}
+```
+  Only keys for channel families that have at least one channel record in the tenant are included (`telegram`/`max`/`whatsapp`). `all` is always present.
 
 #### GET `/api/conversations/:id`
 
