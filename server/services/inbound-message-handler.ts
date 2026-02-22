@@ -70,7 +70,11 @@ export function detectGearboxMarkingFromText(text: string): string | null {
   // Skip OEM part numbers (digits-digits pattern like 24600-42L00)
   if (/^\d{4,6}-\d{4,6}[A-Z0-9]*$/.test(upper)) return null;
 
-  const oemPattern = /\b([A-Z0-9]{2,4}[A-Z][0-9]{1,4}[A-Z0-9]{0,4}(?:-[A-Z0-9]{2,5})?)\b/g;
+  // Two alternatives:
+  //   1. letter(s)+digits+letter  — covers U150E, A245E, JF010E, U660E
+  //   2. alphanumeric+letter+digits — covers RE4F04A, NAG1, 6HP19, A8TR1
+  const oemPattern =
+    /\b((?:[A-Z]{1,3}[0-9]{2,4}[A-Z][A-Z0-9]{0,4}|[A-Z0-9]{2,4}[A-Z][0-9]{1,4}[A-Z0-9]{0,4})(?:-[A-Z0-9]{2,5})?)\b/g;
   const matches = upper.match(oemPattern);
   if (!matches) return null;
 
@@ -461,6 +465,7 @@ export async function processIncomingMessageFull(
     // and enqueue a direct price lookup — skip Podzamenu VIN/FRAME lookup entirely.
     if (!vehicleDet && autoPartsEnabled) {
       const detectedMarking = detectGearboxMarkingFromText(text);
+      console.log('[GearboxDetect] autoPartsEnabled:', autoPartsEnabled, '| detected:', detectedMarking);
       if (detectedMarking) {
         console.log(
           `[InboundHandler] Gearbox marking detected (${detectedMarking}) — enqueueing direct price lookup for ${result.conversationId}`,

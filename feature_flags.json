@@ -34,5 +34,8 @@
   },
   "global:MAX_PERSONAL_CHANNEL_ENABLED": {
     "enabled": true
+  },
+  "global:AUTO_PARTS_ENABLED": {
+    "enabled": true
   }
 }
