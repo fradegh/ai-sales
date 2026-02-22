@@ -622,7 +622,7 @@ export default function Conversations() {
                     </SheetHeader>
                     <div className="mt-4 flex flex-col gap-4">
                       <CustomerCard customerId={conversationDetail.customerId} />
-                      {conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId && (
+                      {conversations?.find(c => c.id === selectedId)?.customer?.channel === "mock" && selectedId && (
                         <div className="border-t pt-4">
                           <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Тест: ответ клиента</p>
                           {showReplyAsCustomer ? (
@@ -707,7 +707,7 @@ export default function Conversations() {
                     </SheetHeader>
                     <div className="mt-4 flex flex-col gap-4">
                       <CustomerCard customerId={conversationDetail.customerId} />
-                      {conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId && (
+                      {conversations?.find(c => c.id === selectedId)?.customer?.channel === "mock" && selectedId && (
                         <div className="border-t pt-4">
                           <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Тест: ответ клиента</p>
                           {showReplyAsCustomer ? (
@@ -771,7 +771,7 @@ export default function Conversations() {
         {conversationDetail?.customerId && (
           <div className="hidden shrink-0 border-l p-4 xl:flex xl:flex-col xl:gap-4 w-72">
             <CustomerCard customerId={conversationDetail.customerId} />
-            {conversations?.find(c => c.id === selectedId)?.channel?.type === "mock" && selectedId && (
+            {conversations?.find(c => c.id === selectedId)?.customer?.channel === "mock" && selectedId && (
               <div className="border-t pt-4">
                 <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">Тест: ответ клиента</p>
                 {showReplyAsCustomer ? (
