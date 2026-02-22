@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Key, Shield, Check, X, RotateCw, MessageCircle, Send, Coins, Bot, MessageSquare, Eye, EyeOff, Bell } from "lucide-react";
+import { Loader2, Key, Shield, Check, X, RotateCw, MessageCircle, Send, Coins, Bot, MessageSquare, Eye, EyeOff, Bell, Database } from "lucide-react";
 import { SiTelegram, SiWhatsapp, SiOpenai } from "react-icons/si";
 
 interface SecretMetadata {
@@ -176,6 +176,22 @@ const INTEGRATIONS: IntegrationConfig[] = [
         placeholder: "sk-xxxxxxxxxxxxxxxx",
         required: true,
         hint: "Ключ API из platform.openai.com",
+      },
+    ],
+  },
+  {
+    id: "partsapi",
+    name: "PartsAPI",
+    description: "Декодирование VIN по оригинальным каталогам (partsapi.ru)",
+    icon: <Database className="h-6 w-6" />,
+    color: "bg-[#6366f1]",
+    secrets: [
+      {
+        keyName: "PARTSAPI_KEY",
+        label: "API Key",
+        placeholder: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        required: false,
+        hint: "Ключ API из личного кабинета partsapi.ru",
       },
     ],
   },

@@ -12,10 +12,20 @@ import { fillGearboxTemplate } from "../services/gearbox-templates";
 import { detectGearboxType } from "../services/price-sources/types";
 import { storage } from "../storage";
 import type { VehicleContext } from "../services/transmission-identifier";
+import { getSecret } from "../services/secret-resolver";
+import { decodeVinPartsApi } from "../services/partsapi-vin-decoder";
 
 const QUEUE_NAME = "vehicle_lookup_queue";
 
 const DUPLICATE_SUGGESTION_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+
+function isValidTransmissionModel(model: string | null): boolean {
+  if (!model) return false;
+  if (model.length > 12) return false;
+  // Reject internal catalog codes with 4+ consecutive digits (e.g. M3MHD987579)
+  if (/\d{4,}/.test(model)) return false;
+  return /^[A-Z0-9][A-Z0-9\-()]{1,11}$/.test(model);
+}
 
 function computeLookupConfidence(gearbox: GearboxInfo, evidence: Record<string, unknown>): number {
   let c = 0.5;
@@ -213,6 +223,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
 
   try {
     const lookupResult = await lookupByVehicleId({ idType, value: normalizedValue });
+    console.log(`[VehicleLookupWorker] Raw Podzamenu response:`, JSON.stringify(lookupResult, null, 2));
     const { gearbox } = lookupResult;
 
     const hasOem = gearbox.oemStatus === "FOUND" && gearbox.oem;
@@ -227,6 +238,44 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       return;
     }
 
+    // ── Vehicle context ────────────────────────────────────────────────────────
+    // Podzamenu owns OEM numbers; PartsAPI owns clean vehicle metadata.
+    // Use Podzamenu gearbox.model as hint only when it passes the market-code
+    // validator (rejects internal codes like M3MHD987579). Fall back to the kpp
+    // field from PartsAPI if available and valid.
+
+    const podzamenuGearboxHint = isValidTransmissionModel(gearbox.model ?? null)
+      ? (gearbox.model ?? null)
+      : null;
+    const factoryCode = gearbox.factoryCode ?? null;
+
+    const partsApiKey = await getSecret({ scope: "global", keyName: "PARTSAPI_KEY" });
+    const partsApi = idType === "VIN" && partsApiKey
+      ? await decodeVinPartsApi(normalizedValue, partsApiKey).catch(() => null)
+      : null;
+
+    console.log("[VehicleLookupWorker] PartsAPI result:", JSON.stringify(partsApi));
+
+    const partsApiKppHint =
+      partsApi?.kpp && isValidTransmissionModel(partsApi.kpp) ? partsApi.kpp : null;
+    const gearboxModelHint = podzamenuGearboxHint ?? partsApiKppHint;
+
+    const vehicleContext: VehicleContext = {
+      make: partsApi?.make ?? null,
+      model: partsApi?.modelName ?? null,
+      year: partsApi?.year ?? null,
+      engine: partsApi?.engineCode ?? null,
+      body: null,
+      driveType: null,
+      gearboxModelHint,
+      factoryCode,
+    };
+
+    console.log(
+      `[VehicleLookupWorker] Final vehicleContext: make=${vehicleContext.make}, model=${vehicleContext.model}, year=${vehicleContext.year}, engine=${vehicleContext.engine}, gearboxHint=${vehicleContext.gearboxModelHint}`
+    );
+
+    // ── Cache & status ─────────────────────────────────────────────────────────
     const lookupConfidence = computeLookupConfidence(gearbox, lookupResult.evidence as Record<string, unknown>);
     const result = {
       vehicleMeta: lookupResult.vehicleMeta,
@@ -273,10 +322,10 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       idType,
     });
 
+    // ── Price lookup routing ───────────────────────────────────────────────────
     const isModelOnly = gearbox.oemStatus === "MODEL_ONLY" && !!gearbox.model;
 
     if (isModelOnly) {
-      const vehicleMeta = lookupResult.vehicleMeta as { make?: string; model?: string; year?: number } | undefined;
       const lastMessage = await getLastCustomerMessageText(conversationId);
       const gearboxType = lastMessage ? detectGearboxType(lastMessage) : "unknown" as const;
 
@@ -286,8 +335,8 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
         conversationId,
         oem: null,
         searchFallback: {
-          make: vehicleMeta?.make ?? null,
-          model: vehicleMeta?.model ?? null,
+          make: vehicleContext.make,
+          model: vehicleContext.model,
           gearboxType,
           gearboxModel: gearbox.model ?? null,
         },
@@ -296,24 +345,11 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       console.log(`[VehicleLookupWorker] Auto-started price lookup (VW Group MODEL_ONLY, model: ${gearbox.model}).`);
     } else if (lookupConfidence >= 0.85 && gearbox.oemStatus === "FOUND" && gearbox.oem) {
       const { enqueuePriceLookup } = await import("../services/price-lookup-queue");
-      const vehicleMeta = lookupResult.vehicleMeta as {
-        make?: string; model?: string; year?: number; engine?: string; body?: string; driveType?: string;
-      } | undefined;
-      const vehicleContext: VehicleContext = {
-        make: vehicleMeta?.make ?? null,
-        model: vehicleMeta?.model ?? null,
-        year: vehicleMeta?.year != null ? String(vehicleMeta.year) : null,
-        engine: vehicleMeta?.engine ?? null,
-        body: vehicleMeta?.body ?? null,
-        driveType: vehicleMeta?.driveType ?? null,
-        gearboxModelHint: gearbox.model ?? null,
-        factoryCode: gearbox.factoryCode ?? null,
-      };
       await enqueuePriceLookup({
         tenantId,
         conversationId,
         oem: gearbox.oem,
-        oemModelHint: gearbox.model ?? null,
+        oemModelHint: gearboxModelHint,
         vehicleContext,
       });
       console.log("[VehicleLookupWorker] Auto-started price lookup (high confidence OEM).");
@@ -323,7 +359,10 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
         conversationId,
         messageId: caseRow.messageId ?? undefined,
         gearbox,
-        vehicleMeta: lookupResult.vehicleMeta as { make?: string; model?: string; year?: number } | undefined,
+        vehicleMeta: {
+          make: vehicleContext.make ?? undefined,
+          model: vehicleContext.model ?? undefined,
+        },
       });
     }
   } catch (error) {
