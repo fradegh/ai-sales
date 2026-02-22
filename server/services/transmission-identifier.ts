@@ -25,6 +25,11 @@ const SYSTEM_PROMPT =
   "Return the modelName as the market/commercial name used in Russian контрактные АКПП listings " +
   "(e.g. 'F4A42', 'U660E', 'A4CF1', 'AW55-51SN') — NOT internal catalog codes or part numbers. " +
   "If unsure of the exact model, return the most likely market model name for this vehicle. " +
+  "For Hyundai/Mitsubishi transmissions: " +
+  "- F4A42 is used in Hyundai Elantra/Tiburon 2.0L (G4GC engine), 4-speed; " +
+  "- A4AF3 is used in Hyundai Accent/Getz 1.5L, 4-speed; " +
+  "- F4A51 is used in Hyundai Sonata/Santa Fe 2.0-2.7L. " +
+  "Use engine code and vehicle model to disambiguate. " +
   "Respond ONLY in valid JSON, no markdown.";
 
 const FALLBACK_RESULT: TransmissionIdentification = {
@@ -47,6 +52,8 @@ export async function identifyTransmissionByOem(
   context?: VehicleContext
 ): Promise<TransmissionIdentification> {
   try {
+    console.log(`[TransmissionIdentifier] vehicleContext received:`, JSON.stringify(context ?? null));
+
     const contextLines: string[] = [];
     if (context?.make || context?.model) {
       contextLines.push(`Vehicle: ${[context.make, context.model].filter(Boolean).join(" ")}`);
@@ -69,6 +76,8 @@ export async function identifyTransmissionByOem(
       marketNameNote +
       `Identify: modelName, manufacturer, origin, confidence, notes.`;
 
+    console.log(`[TransmissionIdentifier] GPT prompt:\n${userPrompt}`);
+
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -80,6 +89,7 @@ export async function identifyTransmissionByOem(
     });
 
     const raw = response.choices[0]?.message?.content?.trim() ?? "";
+    console.log(`[TransmissionIdentifier] GPT response: ${JSON.stringify(raw)}`);
     const parsed = JSON.parse(raw) as Partial<TransmissionIdentification>;
 
     const validOrigins = ["japan", "europe", "korea", "usa", "unknown"] as const;
