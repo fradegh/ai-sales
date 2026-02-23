@@ -267,7 +267,10 @@ export async function searchUsedTransmissionPrice(
       });
 
       const content: string = response.output_text ?? "";
-      return parseListingsFromResponse(content);
+      console.log('[PriceSearcher] Raw GPT response:', content.substring(0, 2000));
+      const parsed = parseListingsFromResponse(content);
+      console.log('[PriceSearcher] Parsed listings count (price-validated):', parsed.length);
+      return parsed;
     } catch (err: any) {
       console.warn(`[PriceSearcher] OpenAI web search failed: ${err.message}`);
       return [];
@@ -287,6 +290,7 @@ export async function searchUsedTransmissionPrice(
     }
     return true;
   });
+  console.log(`[PriceSearcher] After keyword filter (primary): ${listings.length} kept, ${filteredOut} excluded`);
 
   // Fallback search if < 2 valid listings
   if (listings.length < 2) {
@@ -301,6 +305,7 @@ export async function searchUsedTransmissionPrice(
       }
       return true;
     });
+    console.log(`[PriceSearcher] After keyword filter (fallback): ${listings.length} kept, ${filteredOut} excluded`);
   }
 
   if (listings.length < 2) {
@@ -311,6 +316,7 @@ export async function searchUsedTransmissionPrice(
   // Remove outliers > 3x median
   const validPrices = removeOutliers(listings.map((l) => l.price));
   const validListings = listings.filter((l) => validPrices.includes(l.price));
+  console.log(`[PriceSearcher] After outlier removal: ${validListings.length} kept (before: ${listings.length})`);
 
   if (validListings.length < 2) {
     return { ...notFoundResult, searchQuery: usedQuery, filteredOutCount: filteredOut };
