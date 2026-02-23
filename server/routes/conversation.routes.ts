@@ -338,6 +338,50 @@ router.post(
 
       await storage.updateConversation(req.params.id, { unreadCount: 0 });
 
+      // ── VIN OCR for customer image uploads ─────────────────────────────────
+      // When an image is uploaded explicitly as a customer message (role: "customer"),
+      // run OCR to detect a VIN and trigger vehicle lookup — same pipeline as the
+      // inbound channel handler.
+      if (role === "customer" && uploadedFile && uploadedFile.mimetype?.startsWith("image/")) {
+        const autoPartsEnabled = await featureFlagService.isEnabled("AUTO_PARTS_ENABLED", msgUser.tenantId);
+        if (autoPartsEnabled) {
+          try {
+            const { extractVinFromImages } = await import("../services/vin-ocr.service");
+            const dataUrl = `data:${uploadedFile.mimetype};base64,${uploadedFile.buffer.toString("base64")}`;
+            const vinFromImage = await extractVinFromImages([{ url: dataUrl, mimeType: uploadedFile.mimetype }]).catch(() => null);
+            if (vinFromImage) {
+              console.log(`[ConversationRoute] VIN extracted from customer image OCR: ${vinFromImage}`);
+              const activeCase = await storage.findActiveVehicleLookupCase(msgUser.tenantId, req.params.id, vinFromImage);
+              if (!activeCase) {
+                const row = await storage.createVehicleLookupCase({
+                  tenantId: msgUser.tenantId,
+                  conversationId: req.params.id,
+                  messageId: message.id,
+                  idType: "VIN",
+                  rawValue: vinFromImage,
+                  normalizedValue: vinFromImage,
+                  status: "PENDING",
+                  verificationStatus: "NONE",
+                });
+                const { enqueueVehicleLookup } = await import("../services/vehicle-lookup-queue");
+                await enqueueVehicleLookup({
+                  caseId: row.id,
+                  tenantId: msgUser.tenantId,
+                  conversationId: req.params.id,
+                  idType: "VIN",
+                  normalizedValue: vinFromImage,
+                });
+                console.log(`[ConversationRoute] Created vehicle lookup case ${row.id} from customer image OCR`);
+              } else {
+                console.log(`[ConversationRoute] Skipped duplicate lookup case for VIN ${vinFromImage}`);
+              }
+            }
+          } catch (ocrError: any) {
+            console.error("[ConversationRoute] VIN OCR failed:", ocrError.message);
+          }
+        }
+      }
+
       // ── Text send path (no file, or file already handled above) ───────────
       if (!uploadedFile && role === "owner" && conversation.messages.length > 0) {
         if (effectiveChannelType === "whatsapp_personal" && conversation.customer) {

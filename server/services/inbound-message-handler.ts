@@ -391,7 +391,23 @@ export async function processIncomingMessageFull(
       return;
     }
 
-    const vehicleDet = detectVehicleIdFromText(text);
+    let vehicleDet = detectVehicleIdFromText(text);
+
+    // If no VIN/FRAME in text but there are image attachments → try OCR
+    if (!vehicleDet && !text) {
+      const imageAttachments = (parsed.attachments ?? []).filter(
+        (a) => a.type === "image" && a.url
+      );
+      if (imageAttachments.length > 0) {
+        console.log(`[InboundHandler] No text VIN found, attempting OCR on ${imageAttachments.length} image(s)`);
+        const { extractVinFromImages } = await import("./vin-ocr.service");
+        const vinFromImage = await extractVinFromImages(imageAttachments).catch(() => null);
+        if (vinFromImage) {
+          console.log(`[InboundHandler] VIN extracted via image OCR: ${vinFromImage}`);
+          vehicleDet = { idType: "VIN", rawValue: vinFromImage, normalizedValue: vinFromImage };
+        }
+      }
+    }
 
     if (vehicleDet && "isIncompleteVin" in vehicleDet && vehicleDet.isIncompleteVin) {
       const conversation = await storage.getConversationDetail(result.conversationId);

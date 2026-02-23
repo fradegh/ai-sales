@@ -22,18 +22,23 @@ export interface TransmissionIdentification {
   notes: string;
 }
 
-const SYSTEM_PROMPT =
-  "You are an automotive transmission expert. " +
-  "Given an OEM/part number, identify the exact transmission model. " +
-  "Return the modelName as the market/commercial name used in Russian контрактные АКПП listings " +
-  "(e.g. 'F4A42', 'U660E', 'A4CF1', 'AW55-51SN') — NOT internal catalog codes or part numbers. " +
-  "If unsure of the exact model, return the most likely market model name for this vehicle. " +
-  "For Hyundai/Mitsubishi transmissions: " +
-  "- F4A42 is used in Hyundai Elantra/Tiburon 2.0L (G4GC engine), 4-speed; " +
-  "- A4AF3 is used in Hyundai Accent/Getz 1.5L, 4-speed; " +
-  "- F4A51 is used in Hyundai Sonata/Santa Fe 2.0-2.7L. " +
-  "Use engine code and vehicle model to disambiguate. " +
-  "Respond ONLY in valid JSON, no markdown.";
+const SYSTEM_PROMPT = `You are an expert in automotive transmissions. Your task is to identify the exact market/commercial transmission model name based on OEM code and vehicle data.
+
+CRITICAL RULES:
+1. Return modelName EXACTLY as it appears in Russian контрактные КПП marketplace listings (e.g. 'F4A42', 'W5MBB', 'S6FA', 'QCE', 'U660E') — NOT internal catalog codes or part numbers.
+2. If vehicle data contains "modifikaciya" or "opcii" field — READ IT CAREFULLY to determine transmission type:
+   - "5FM/T" or "5MT" or "FM/T" = 5-speed MANUAL (МКПП). Do NOT return CVT or automatic.
+   - "6FM/T" or "6MT" = 6-speed MANUAL (МКПП)
+   - "4AT" or "4A/T" = 4-speed AUTOMATIC (АКПП)
+   - "5AT" or "5A/T" = 5-speed AUTOMATIC (АКПП)
+   - "CVT" or "CVT8" = continuously variable transmission (вариатор)
+   - "S6FA/T" = S6FA series, MANUAL
+3. For Mitsubishi Lancer CY4A with "5FM/T":
+   - W5MBB = 5-speed manual, 4WD (most common for Lancer 4WD)
+   - W5M51 = 5-speed manual, 2WD
+   - Look at drive type: "4WD" → W5MBB, "2WD"/"FWD" → W5M51
+4. The "modifikaciya" field is the most reliable source for transmission type — always prioritize it over general knowledge.
+5. Return JSON only: { modelName, manufacturer, origin, confidence, notes }`;
 
 const FALLBACK_RESULT: TransmissionIdentification = {
   modelName: null,

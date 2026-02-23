@@ -146,14 +146,15 @@ export default function Conversations() {
   });
 
   const sendManualMutation = useMutation({
-    mutationFn: async ({ content, file }: { content: string; file?: File }) => {
+    mutationFn: async ({ content, file, role = "owner" }: { content: string; file?: File; role?: string }) => {
       if (file) {
         const formData = new FormData();
         formData.append("content", content);
         formData.append("file", file);
+        formData.append("role", role);
         return apiRequest("POST", `/api/conversations/${selectedId}/messages`, formData);
       }
-      return apiRequest("POST", `/api/conversations/${selectedId}/messages`, { content });
+      return apiRequest("POST", `/api/conversations/${selectedId}/messages`, { content, role });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/conversations", selectedId] });
@@ -343,8 +344,23 @@ export default function Conversations() {
   });
 
   const replyAsCustomerMutation = useMutation({
-    mutationFn: async ({ conversationId, message }: { conversationId: string; message: string }) => {
-      const res = await apiRequest("POST", "/api/test/simulate-message", { conversationId, message });
+    mutationFn: async ({
+      conversationId,
+      message,
+      imageBase64,
+      imageMimeType,
+    }: {
+      conversationId: string;
+      message: string;
+      imageBase64?: string;
+      imageMimeType?: string;
+    }) => {
+      const res = await apiRequest("POST", "/api/test/simulate-message", {
+        conversationId,
+        message,
+        imageBase64,
+        imageMimeType,
+      });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Ошибка отправки сообщения");
       return json;
