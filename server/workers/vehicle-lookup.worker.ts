@@ -13,7 +13,7 @@ import { detectGearboxType } from "../services/price-sources/types";
 import { storage } from "../storage";
 import type { VehicleContext } from "../services/transmission-identifier";
 import { getSecret } from "../services/secret-resolver";
-import { decodeVinPartsApi } from "../services/partsapi-vin-decoder";
+import { decodeVinPartsApiWithRetry } from "../services/partsapi-vin-decoder";
 
 const QUEUE_NAME = "vehicle_lookup_queue";
 
@@ -251,7 +251,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
 
     const partsApiKey = await getSecret({ scope: "global", keyName: "PARTSAPI_KEY" });
     const partsApi = idType === "VIN" && partsApiKey
-      ? await decodeVinPartsApi(normalizedValue, partsApiKey).catch(() => null)
+      ? await decodeVinPartsApiWithRetry(normalizedValue, partsApiKey)
       : null;
 
     console.log("[VehicleLookupWorker] PartsAPI result:", JSON.stringify(partsApi));

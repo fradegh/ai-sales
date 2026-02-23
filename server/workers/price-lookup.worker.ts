@@ -339,9 +339,30 @@ async function estimatePriceFromAI(
       vehicleContext?.driveType ?? null,
     ].filter(Boolean).join(' ');
 
-    const vehicleLine = vehicleContext?.make || vehicleContext?.model
-      ? `Vehicle: ${vehicleContext.make ?? 'unknown'} ${vehicleContext.model ?? 'unknown'}` +
-        (vehicleContext.year ? `, ${vehicleContext.year}` : '') + '.\n'
+    const make  = vehicleContext?.make  ?? null;
+    const model = vehicleContext?.model ?? null;
+    const year  = vehicleContext?.year  ?? null;
+
+    const vehicleLine = make || model
+      ? `Vehicle: ${make ?? 'unknown'} ${model ?? 'unknown'}` +
+        (year ? `, ${year}` : '') + '.\n'
+      : '';
+
+    const driveType = vehicleContext?.driveType ?? null;
+
+    const rarityHints: string[] = [];
+    if (driveType === '4WD' || driveType === 'AWD') {
+      rarityHints.push('4WD/AWD transmissions are less common and typically cost more');
+    }
+    if (gearboxLabel === 'МКПП') {
+      rarityHints.push('manual transmissions are rarer in Russian контрактная market than automatics');
+    }
+    if (gearboxLabel === 'вариатор') {
+      rarityHints.push('CVT units vary widely in price depending on condition and mileage');
+    }
+
+    const rarityNote = rarityHints.length > 0
+      ? `Note: ${rarityHints.join('; ')}.\n`
       : '';
 
     const response = await openai.chat.completions.create({
@@ -355,8 +376,8 @@ async function estimatePriceFromAI(
             `OEM code: ${oem}\n` +
             `Transmission: ${transmissionDesc}\n` +
             vehicleLine +
-            `Base your estimate on actual listings on drom.ru and avito.ru. ` +
-            `Do NOT underestimate — rare 4WD manual gearboxes can cost 80,000–150,000 RUB or more.\n` +
+            rarityNote +
+            `Base your estimate on actual listings on drom.ru and avito.ru.\n` +
             `Respond ONLY with valid JSON, no markdown:\n` +
             `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
             `If uncertain, give a wider range. Always return numbers.`,
