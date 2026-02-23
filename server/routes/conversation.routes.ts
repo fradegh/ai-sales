@@ -346,8 +346,9 @@ router.post(
         const autoPartsEnabled = await featureFlagService.isEnabled("AUTO_PARTS_ENABLED", msgUser.tenantId);
         if (autoPartsEnabled) {
           try {
-            const { extractVinFromImages } = await import("../services/vin-ocr.service");
+            const { extractVinFromImages, logSafeUrl } = await import("../services/vin-ocr.service");
             const dataUrl = `data:${uploadedFile.mimetype};base64,${uploadedFile.buffer.toString("base64")}`;
+            console.log(`[ConversationRoute] Running VIN OCR on customer image: ${logSafeUrl(dataUrl)}`);
             const vinFromImage = await extractVinFromImages([{ url: dataUrl, mimeType: uploadedFile.mimetype }]).catch(() => null);
             if (vinFromImage) {
               console.log(`[ConversationRoute] VIN extracted from customer image OCR: ${vinFromImage}`);

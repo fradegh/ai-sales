@@ -399,8 +399,9 @@ export async function processIncomingMessageFull(
         (a) => a.type === "image" && a.url
       );
       if (imageAttachments.length > 0) {
-        console.log(`[InboundHandler] No text VIN found, attempting OCR on ${imageAttachments.length} image(s)`);
-        const { extractVinFromImages } = await import("./vin-ocr.service");
+        const { extractVinFromImages, logSafeUrl } = await import("./vin-ocr.service");
+        const safeUrls = imageAttachments.map((a) => logSafeUrl(a.url ?? ""));
+        console.log(`[InboundHandler] No text VIN found, attempting OCR on ${imageAttachments.length} image(s): ${safeUrls.join(", ")}`);
         const vinFromImage = await extractVinFromImages(imageAttachments).catch(() => null);
         if (vinFromImage) {
           console.log(`[InboundHandler] VIN extracted via image OCR: ${vinFromImage}`);
