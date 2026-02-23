@@ -4,6 +4,67 @@
  */
 
 const DEFAULT_URL = "http://localhost:8200";
+
+// ── OEM candidate scoring ──────────────────────────────────────────────────
+// Podzamenu often returns multiple OEM candidates for the transmission
+// section. The first entry is not always the gearbox assembly — it can be
+// a control module, bracket, or other ancillary part.
+// We score each candidate by its name and pick the highest-scoring one.
+
+const ASSEMBLY_KEYWORDS = [
+  "в сборе", "сборе", "assembly",
+  "коробка передач", "кпп", "акпп", "мкпп", "вариатор", "cvt",
+  "ведущий мост в блоке", "автоматическая коробка", "механическая коробка",
+  "блок с автоматической", "трансмиссия",
+];
+
+const EXCLUDE_KEYWORDS = [
+  "модуль", "блок управления", "датчик", "прокладка", "сальник",
+  "фильтр", "шланг", "гайка", "болт", "кронштейн", "крышка",
+  "поддон", "щуп", "трубка", "клапан", "соленоид", "sensor",
+  "module", "control unit", "bracket", "gasket", "seal", "filter",
+];
+
+function scoreCandidate(name: string): number {
+  const lower = name.toLowerCase();
+  if (EXCLUDE_KEYWORDS.some((k) => lower.includes(k))) return -1;
+  if (ASSEMBLY_KEYWORDS.some((k) => lower.includes(k))) return 2;
+  return 1; // neutral
+}
+
+function selectBestOemCandidate(
+  candidates: GearboxOemCandidate[],
+  serviceOem: string | null
+): string | null {
+  if (candidates.length === 0) return serviceOem;
+
+  const scored = candidates.map((c) => ({
+    ...c,
+    score: scoreCandidate(c.name ?? ""),
+  }));
+
+  console.log(
+    "[Podzamenu] Candidate scores:",
+    JSON.stringify(scored.map(({ oem, name, score }) => ({ oem, name, score })))
+  );
+
+  const best = scored
+    .filter((c) => c.score >= 0)
+    .sort((a, b) => b.score - a.score)[0];
+
+  if (!best) {
+    console.log("[Podzamenu] All candidates excluded by keyword filter, falling back to service OEM");
+    return serviceOem;
+  }
+
+  console.log(
+    "[Podzamenu] Selected best candidate:",
+    JSON.stringify({ oem: best.oem, name: best.name, score: best.score })
+  );
+
+  return best.oem;
+}
+
 const TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 10_000;
@@ -105,13 +166,17 @@ async function attemptLookup(url: string, request: LookupRequest): Promise<Looku
       );
     }
 
+    const oemCandidates: GearboxOemCandidate[] = Array.isArray(data.gearbox.oemCandidates)
+      ? data.gearbox.oemCandidates
+      : [];
+
+    const selectedOem = selectBestOemCandidate(oemCandidates, data.gearbox.oem ?? null);
+
     const gearbox: GearboxInfo = {
       model: data.gearbox.model ?? null,
       factoryCode: data.gearbox.factoryCode ?? null,
-      oem: data.gearbox.oem ?? null,
-      oemCandidates: Array.isArray(data.gearbox.oemCandidates)
-        ? data.gearbox.oemCandidates
-        : [],
+      oem: selectedOem,
+      oemCandidates,
       oemStatus: data.gearbox.oemStatus,
     };
 
