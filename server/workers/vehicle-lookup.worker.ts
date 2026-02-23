@@ -260,22 +260,51 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       partsApi?.kpp && isValidTransmissionModel(partsApi.kpp) ? partsApi.kpp : null;
     const gearboxModelHint = podzamenuGearboxHint ?? partsApiKppHint;
 
+    // Parse driveType and gearboxType from PartsAPI modifikaciya field.
+    // These fields are often null on partsApi directly but present in rawData.modifikaciya
+    // (e.g. "2000(SEDAN) - INTENSE(4WD/EURO4),5FM/T RUSSIA").
+    const rawData = partsApi?.rawData as Record<string, string> | null | undefined;
+    const modif = (rawData?.modifikaciya || '').toUpperCase();
+
+    const parsedDriveType: string | null = modif.includes('4WD') || modif.includes('AWD')
+      ? '4WD'
+      : modif.includes('2WD') || modif.includes('FWD')
+        ? '2WD'
+        : null;
+
+    const parsedGearboxType: string | null = modif.includes('FM/T') || modif.includes('/MT') || modif.includes('MT,')
+      ? 'MT'
+      : modif.includes('CVT')
+        ? 'CVT'
+        : modif.includes('/AT') || modif.includes('AT,') || modif.includes('A/T')
+          ? 'AT'
+          : null;
+
+    if (modif) {
+      console.log(
+        `[VehicleLookupWorker] modifikaciya="${modif}" → driveType=${parsedDriveType ?? 'null'}, gearboxType=${parsedGearboxType ?? 'null'}`
+      );
+    }
+
     const vehicleContext: VehicleContext = {
       make: partsApi?.make ?? null,
       model: partsApi?.modelName ?? null,
       year: partsApi?.year ?? null,
       engine: partsApi?.engineCode ?? null,
       body: partsApi?.bodyType ?? null,
-      driveType: partsApi?.driveType ?? null,
+      driveType: parsedDriveType ?? partsApi?.driveType ?? null,
       gearboxModelHint,
       factoryCode,
-      gearboxType: partsApi?.gearboxType ?? null,
+      gearboxType: parsedGearboxType ?? partsApi?.gearboxType ?? null,
       displacement: partsApi?.displacement ?? null,
       partsApiRawData: partsApi?.rawData ?? null,
     };
 
     console.log(
-      `[VehicleLookupWorker] Final vehicleContext: make=${vehicleContext.make}, model=${vehicleContext.model}, year=${vehicleContext.year}, engine=${vehicleContext.engine}, gearboxHint=${vehicleContext.gearboxModelHint}`
+      `[VehicleLookupWorker] Final vehicleContext: make=${vehicleContext.make}, model=${vehicleContext.model}, ` +
+      `year=${vehicleContext.year}, engine=${vehicleContext.engine}, ` +
+      `driveType=${vehicleContext.driveType}, gearboxType=${vehicleContext.gearboxType}, ` +
+      `gearboxHint=${vehicleContext.gearboxModelHint}`
     );
 
     // ── Cache & status ─────────────────────────────────────────────────────────

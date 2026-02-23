@@ -370,6 +370,14 @@ async function estimatePriceFromAI(
   }
 }
 
+// ─── Gearbox type → Russian label ────────────────────────────────────────────
+
+function pickGearboxLabel(gearboxType?: string | null): string {
+  if (gearboxType === 'MT') return 'МКПП';
+  if (gearboxType === 'CVT') return 'вариатор';
+  return 'АКПП';
+}
+
 // ─── Transmission model validation ───────────────────────────────────────────
 
 function isValidTransmissionModel(model: string | null): boolean {
@@ -395,6 +403,9 @@ async function lookupPricesByOem(
   // Load agent settings once — needed for mileage tier thresholds
   const agentSettings = await storage.getTenantAgentSettings(tenantId);
 
+  // Determine correct Russian gearbox term from vehicleContext.gearboxType
+  const gearboxLabel = pickGearboxLabel(vehicleContext?.gearboxType);
+
   // 1. Check global cache first (any tenant, respects expiresAt)
   const cached = await storage.getGlobalPriceSnapshot(oem);
   if (cached) {
@@ -406,10 +417,10 @@ async function lookupPricesByOem(
       const priceMax = cached.maxPrice ?? 0;
       const displayName =
         cached.modelName ??
-        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} АКПП`.trim() ||
+        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim() ||
         (cached.oem ?? oem);
       const suggestedReply =
-        `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+        `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
         `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
       const confidence = cached.source === "ai_estimate" ? 0.5 : 0.8;
       await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", confidence);
@@ -445,7 +456,8 @@ async function lookupPricesByOem(
     );
   }
 
-  // Fix 3: fallback display name if GPT returned an internal catalog code
+  // Fallback display name if GPT returned an internal catalog code.
+  // When the model is unknown, use vehicle description + gearbox type label.
   const vehicleDesc =
     vehicleContext?.make && vehicleContext?.model
       ? `${vehicleContext.make} ${vehicleContext.model}`
@@ -453,7 +465,7 @@ async function lookupPricesByOem(
   const effectiveDisplayName: string | null = isValidTransmissionModel(identification.modelName)
     ? identification.modelName
     : vehicleDesc
-      ? `${vehicleDesc} АКПП`
+      ? `${vehicleDesc} ${gearboxLabel}`
       : null;
 
   if (!isValidTransmissionModel(identification.modelName) && effectiveDisplayName) {
@@ -485,7 +497,7 @@ async function lookupPricesByOem(
         const avgPrice = Math.round((priceMin + priceMax) / 2);
         const displayName = effectiveDisplayName ?? oem;
         const suggestedReply =
-          `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+          `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
           `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
         const aiSnapshot = await storage.createPriceSnapshot({
           tenantId: null,
@@ -546,10 +558,10 @@ async function lookupPricesByOem(
       const priceMax = snapshot.maxPrice ?? 0;
       const displayName =
         effectiveDisplayName ??
-        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} АКПП`.trim() ||
+        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim() ||
         oem;
       const suggestedReply =
-        `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+        `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
         `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
       await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.8);
       await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);

@@ -95,17 +95,15 @@ export async function identifyTransmissionByOem(
     });
 
     const raw = response.choices[0]?.message?.content ?? '';
-    // Strip markdown code fences if present
-    const cleaned = raw
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```\s*$/i, '')
+    const stripped = raw.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/i, '')
       .trim();
 
     console.log('[TransmissionIdentifier] GPT response:', raw);
-    console.log('[TransmissionIdentifier] Cleaned for parse:', cleaned);
+    console.log('[TransmissionIdentifier] Stripped response:', stripped);
 
-    const parsed = JSON.parse(cleaned) as Partial<TransmissionIdentification>;
+    const parsed = JSON.parse(stripped) as Partial<TransmissionIdentification>;
 
     const validOrigins = ["japan", "europe", "korea", "usa", "unknown"] as const;
     const validConfidences = ["high", "medium", "low"] as const;
