@@ -70,8 +70,10 @@ const PREFER_KEYWORDS = [
   "kontraktnaya",
 ];
 
-// Strip parenthetical suffix from gearbox codes: "DES(5A)" → "DES", "01M(ABC)" → "01M"
-function stripParenthetical(code: string): string {
+// Strip parenthetical suffix for DISPLAY purposes only (e.g. customer-facing labels).
+// Do NOT use in search query builders — "FAU(5A)" must be passed verbatim so GPT
+// finds the specific variant, not the entire FAU series.
+function stripParentheticalForDisplay(code: string): string {
   const idx = code.indexOf("(");
   return idx !== -1 ? code.slice(0, idx).trim() : code.trim();
 }
@@ -106,15 +108,14 @@ function buildPrimaryQuery(
         return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc}`;
     }
   }
-  const gearboxCode = stripParenthetical(searchTerm);
   const makePart = make ? `${make} ` : "";
   switch (origin) {
     case "japan":
-      return `${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} контрактная б/у из Японии`;
+      return `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у из Японии`;
     case "europe":
-      return `${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} контрактная б/у из Европы`;
+      return `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у из Европы`;
     default:
-      return `${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} контрактная б/у`;
+      return `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у`;
   }
 }
 
@@ -130,9 +131,8 @@ function buildFallbackQuery(
   if (vehicleDesc) {
     return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} цена купить`;
   }
-  const gearboxCode = stripParenthetical(searchTerm);
   const makePart = make ? `${make} ` : "";
-  return `контрактная ${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} цена купить`;
+  return `контрактная ${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} цена купить`;
 }
 
 function isExcluded(text: string): boolean {
