@@ -43,6 +43,27 @@ async function throwIfResNotOk(res: Response) {
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+async function doRequest(
+  method: string,
+  url: string,
+  data?: unknown,
+  csrfHeaderValue?: string,
+): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (data && !(data instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (csrfHeaderValue) {
+    headers["X-Csrf-Token"] = csrfHeaderValue;
+  }
+  return fetch(url, {
+    method,
+    headers,
+    body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
+    credentials: "include",
+  });
+}
+
 export async function apiRequest(
   method: string,
   url: string,
@@ -50,37 +71,31 @@ export async function apiRequest(
 ): Promise<Response> {
   const isMutating = !SAFE_METHODS.has(method.toUpperCase());
 
-  const headers: Record<string, string> = {};
-  // Don't set Content-Type for FormData — the browser sets it automatically
-  // with the correct multipart boundary. For plain objects, use JSON.
-  if (data && !(data instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-  }
-
+  let token: string | undefined;
   if (isMutating) {
     try {
-      headers["X-Csrf-Token"] = await getCsrfToken();
+      token = await getCsrfToken();
     } catch {
       // If the token cannot be fetched, send without it; the server will
       // return 403 which surfaces as an error to the caller.
     }
   }
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
-    credentials: "include",
-  });
+  const res = await doRequest(method, url, data, token);
 
-  // Stale CSRF token: clear the cache so the next mutating request gets a
-  // fresh one.  The current request still throws so the caller handles it.
+  // Stale CSRF token: clear the cache, fetch a fresh token, and retry once.
   if (!res.ok && res.status === 403 && isMutating) {
     try {
       const body = (await res.clone().json()) as { code?: string };
-      if (body.code === "INVALID_CSRF_TOKEN") invalidateCsrfToken();
+      if (body.code === "INVALID_CSRF_TOKEN") {
+        invalidateCsrfToken();
+        const freshToken = await fetchCsrfToken();
+        const retryRes = await doRequest(method, url, data, freshToken);
+        await throwIfResNotOk(retryRes);
+        return retryRes;
+      }
     } catch {
-      // Body may not be JSON — ignore.
+      // Body may not be JSON or retry itself failed — fall through to original error.
     }
   }
 
