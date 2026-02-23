@@ -433,11 +433,21 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       vehicleContext.gearboxType === "AT" ? "АКПП" :
       (vehicleContext.gearboxModelHint ?? "");
 
+    // Reject serial numbers (nomer_kpp, e.g. "EDDVA4480773") from the model field
+    // before building the customer-facing suggestion. Serial numbers have 4+ consecutive
+    // digits and are meaningless to the customer; use the validated market code instead.
+    const gearboxForSuggestion: GearboxInfo = {
+      ...gearbox,
+      model: isValidTransmissionModel(gearbox.model ?? null)
+        ? gearbox.model
+        : gearboxModelHint,
+    };
+
     await createResultSuggestionIfNeeded({
       tenantId,
       conversationId,
       messageId: caseRow.messageId ?? undefined,
-      gearbox,
+      gearbox: gearboxForSuggestion,
       evidence: lookupResult.evidence as Record<string, unknown>,
       lookupConfidence,
       idType,

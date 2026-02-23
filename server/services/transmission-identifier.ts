@@ -129,6 +129,7 @@ export async function identifyTransmissionByOem(
       model: "gpt-4.1",
       tools: [{ type: "web_search" }],
       input,
+      temperature: 0,
     });
 
     const raw: string = response.output_text ?? "";
