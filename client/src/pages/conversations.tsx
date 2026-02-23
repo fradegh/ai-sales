@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { User, ArrowLeft, Send, X } from "lucide-react";
+import { User, ArrowLeft, Send, X, Paperclip } from "lucide-react";
 import type { ConversationWithCustomer, ConversationDetail } from "@shared/schema";
 import type { ChannelFilter } from "@/components/channel-tabs";
 
@@ -36,6 +36,8 @@ export default function Conversations() {
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [replyAsCustomerText, setReplyAsCustomerText] = useState("");
   const [showReplyAsCustomer, setShowReplyAsCustomer] = useState(false);
+  const [replyAsCustomerFile, setReplyAsCustomerFile] = useState<File | null>(null);
+  const replyAsCustomerFileRef = useRef<HTMLInputElement>(null);
 
   // "Новый диалог" modal state
   const [newDialogOpen, setNewDialogOpen] = useState(false);
@@ -402,6 +404,34 @@ export default function Conversations() {
     });
   };
 
+  const handleSendAsCustomer = async () => {
+    if (!selectedId || (!replyAsCustomerText.trim() && !replyAsCustomerFile)) return;
+    let imageBase64: string | undefined;
+    let imageMimeType: string | undefined;
+    if (replyAsCustomerFile) {
+      imageMimeType = replyAsCustomerFile.type || "image/jpeg";
+      const file = replyAsCustomerFile;
+      imageBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          resolve(dataUrl.split(",")[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+    replyAsCustomerMutation.mutate({
+      conversationId: selectedId,
+      message: replyAsCustomerText.trim(),
+      imageBase64,
+      imageMimeType,
+    });
+    setReplyAsCustomerText("");
+    setReplyAsCustomerFile(null);
+    setShowReplyAsCustomer(false);
+  };
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Conversation List - hidden on mobile when chat is open */}
@@ -651,33 +681,40 @@ export default function Conversations() {
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" && !e.shiftKey) {
                                     e.preventDefault();
-                                    if (replyAsCustomerText.trim()) {
-                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
-                                      setReplyAsCustomerText("");
-                                      setShowReplyAsCustomer(false);
+                                    if (replyAsCustomerText.trim() || replyAsCustomerFile) {
+                                      void handleSendAsCustomer();
                                     }
                                   }
-                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }
+                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }
                                 }}
                                 autoFocus
                               />
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-muted-foreground"
+                                  onClick={() => replyAsCustomerFileRef.current?.click()}
+                                  title="Прикрепить фото"
+                                >
+                                  <Paperclip className="h-3.5 w-3.5" />
+                                </Button>
+                                {replyAsCustomerFile && (
+                                  <span className="text-xs text-muted-foreground truncate max-w-[120px]">{replyAsCustomerFile.name} ✓</span>
+                                )}
+                              </div>
                               <div className="flex gap-2">
                                 <Button
                                   size="sm"
                                   className="flex-1"
-                                  onClick={() => {
-                                    if (replyAsCustomerText.trim()) {
-                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
-                                      setReplyAsCustomerText("");
-                                      setShowReplyAsCustomer(false);
-                                    }
-                                  }}
-                                  disabled={!replyAsCustomerText.trim() || replyAsCustomerMutation.isPending}
+                                  onClick={() => { if (replyAsCustomerText.trim() || replyAsCustomerFile) void handleSendAsCustomer(); }}
+                                  disabled={(!replyAsCustomerText.trim() && !replyAsCustomerFile) || replyAsCustomerMutation.isPending}
                                 >
                                   <Send className="mr-1.5 h-3.5 w-3.5" />
                                   Отправить
                                 </Button>
-                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }}>
+                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }}>
                                   <X className="h-3.5 w-3.5" />
                                 </Button>
                               </div>
@@ -736,33 +773,40 @@ export default function Conversations() {
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter" && !e.shiftKey) {
                                     e.preventDefault();
-                                    if (replyAsCustomerText.trim()) {
-                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
-                                      setReplyAsCustomerText("");
-                                      setShowReplyAsCustomer(false);
+                                    if (replyAsCustomerText.trim() || replyAsCustomerFile) {
+                                      void handleSendAsCustomer();
                                     }
                                   }
-                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }
+                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }
                                 }}
                                 autoFocus
                               />
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 px-2 text-muted-foreground"
+                                  onClick={() => replyAsCustomerFileRef.current?.click()}
+                                  title="Прикрепить фото"
+                                >
+                                  <Paperclip className="h-3.5 w-3.5" />
+                                </Button>
+                                {replyAsCustomerFile && (
+                                  <span className="text-xs text-muted-foreground truncate max-w-[120px]">{replyAsCustomerFile.name} ✓</span>
+                                )}
+                              </div>
                               <div className="flex gap-2">
                                 <Button
                                   size="sm"
                                   className="flex-1"
-                                  onClick={() => {
-                                    if (replyAsCustomerText.trim()) {
-                                      replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
-                                      setReplyAsCustomerText("");
-                                      setShowReplyAsCustomer(false);
-                                    }
-                                  }}
-                                  disabled={!replyAsCustomerText.trim() || replyAsCustomerMutation.isPending}
+                                  onClick={() => { if (replyAsCustomerText.trim() || replyAsCustomerFile) void handleSendAsCustomer(); }}
+                                  disabled={(!replyAsCustomerText.trim() && !replyAsCustomerFile) || replyAsCustomerMutation.isPending}
                                 >
                                   <Send className="mr-1.5 h-3.5 w-3.5" />
                                   Отправить
                                 </Button>
-                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }}>
+                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }}>
                                   <X className="h-3.5 w-3.5" />
                                 </Button>
                               </div>
@@ -800,29 +844,36 @@ export default function Conversations() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
-                          if (replyAsCustomerText.trim()) {
-                            replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
-                            setReplyAsCustomerText("");
-                            setShowReplyAsCustomer(false);
+                          if (replyAsCustomerText.trim() || replyAsCustomerFile) {
+                            void handleSendAsCustomer();
                           }
                         }
-                        if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }
+                        if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }
                       }}
                       autoFocus
                       data-testid="textarea-customer-reply"
                     />
+                    <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-muted-foreground"
+                        onClick={() => replyAsCustomerFileRef.current?.click()}
+                        title="Прикрепить фото"
+                      >
+                        <Paperclip className="h-3.5 w-3.5" />
+                      </Button>
+                      {replyAsCustomerFile && (
+                        <span className="text-xs text-muted-foreground truncate max-w-[120px]">{replyAsCustomerFile.name} ✓</span>
+                      )}
+                    </div>
                     <div className="flex gap-2">
                       <Button
                         size="sm"
                         className="flex-1"
-                        onClick={() => {
-                          if (replyAsCustomerText.trim()) {
-                            replyAsCustomerMutation.mutate({ conversationId: selectedId, message: replyAsCustomerText.trim() });
-                            setReplyAsCustomerText("");
-                            setShowReplyAsCustomer(false);
-                          }
-                        }}
-                        disabled={!replyAsCustomerText.trim() || replyAsCustomerMutation.isPending}
+                        onClick={() => { if (replyAsCustomerText.trim() || replyAsCustomerFile) void handleSendAsCustomer(); }}
+                        disabled={(!replyAsCustomerText.trim() && !replyAsCustomerFile) || replyAsCustomerMutation.isPending}
                         data-testid="button-send-customer-reply"
                       >
                         <Send className="mr-1.5 h-3.5 w-3.5" />
@@ -831,7 +882,7 @@ export default function Conversations() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); }}
+                        onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }}
                       >
                         <X className="h-3.5 w-3.5" />
                       </Button>
@@ -855,5 +906,17 @@ export default function Conversations() {
         )}
       </div>
     </div>
+
+    {/* Shared hidden file input for "reply as customer" image attachment */}
+    <input
+      ref={replyAsCustomerFileRef}
+      type="file"
+      accept="image/*"
+      className="hidden"
+      onChange={(e) => {
+        setReplyAsCustomerFile(e.target.files?.[0] ?? null);
+        e.target.value = "";
+      }}
+    />
   );
 }
