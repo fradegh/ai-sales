@@ -392,20 +392,70 @@ export async function processIncomingMessageFull(
     }
 
     let vehicleDet = detectVehicleIdFromText(text);
+    let imageAnalysisType: "gearbox_tag" | "registration_doc" | null = null;
 
-    // If no VIN/FRAME in text but there are image attachments → try OCR
+    // If no VIN/FRAME in text but there are image attachments → classify image
     if (!vehicleDet && !text) {
       const imageAttachments = (parsed.attachments ?? []).filter(
         (a) => a.type === "image" && a.url
       );
       if (imageAttachments.length > 0) {
-        const { extractVinFromImages, logSafeUrl } = await import("./vin-ocr.service");
+        const { analyzeImages, extractVinFromImages, logSafeUrl } = await import("./vin-ocr.service");
         const safeUrls = imageAttachments.map((a) => logSafeUrl(a.url ?? ""));
-        console.log(`[InboundHandler] No text VIN found, attempting OCR on ${imageAttachments.length} image(s): ${safeUrls.join(", ")}`);
-        const vinFromImage = await extractVinFromImages(imageAttachments).catch(() => null);
-        if (vinFromImage) {
-          console.log(`[InboundHandler] VIN extracted via image OCR: ${vinFromImage}`);
-          vehicleDet = { idType: "VIN", rawValue: vinFromImage, normalizedValue: vinFromImage };
+        console.log(`[InboundHandler] No text VIN found, classifying ${imageAttachments.length} image(s): ${safeUrls.join(", ")}`);
+
+        const imageResult = await analyzeImages(imageAttachments).catch(() => ({ type: "unknown" as const }));
+
+        if (imageResult.type === "gearbox_tag" && imageResult.code) {
+          console.log(`[InboundHandler] Gearbox tag detected in image: ${imageResult.code} — enqueueing direct price lookup`);
+          const { enqueuePriceLookup } = await import("./price-lookup-queue");
+          await enqueuePriceLookup({
+            tenantId,
+            conversationId: result.conversationId,
+            oem: imageResult.code,
+          });
+          return;
+        }
+
+        if (imageResult.type === "registration_doc") {
+          imageAnalysisType = "registration_doc";
+          const identifier = imageResult.vin ?? imageResult.frame;
+          if (identifier) {
+            const idType: "VIN" | "FRAME" = imageResult.vin ? "VIN" : "FRAME";
+            const labelRu = imageResult.vin ? "VIN" : "номер кузова";
+            console.log(`[InboundHandler] Registration doc detected, ${idType}: ${identifier}`);
+
+            const tenant = await storage.getTenant(tenantId) ?? await storage.getDefaultTenant();
+            if (tenant) {
+              const suggestion = await storage.createAiSuggestion({
+                conversationId: result.conversationId,
+                messageId: result.messageId,
+                suggestedReply: `Вижу свидетельство о регистрации. Нашёл ${labelRu}: ${identifier}. Начинаю подбор КПП.`,
+                intent: "gearbox_tag_request",
+                confidence: 1,
+                needsApproval: true,
+                needsHandoff: false,
+                questionsToAsk: [],
+                usedSources: [],
+                status: "pending",
+              });
+              realtimeService.broadcastNewSuggestion(tenant.id, result.conversationId, suggestion.id);
+              console.log(`[InboundHandler] Created registration_doc suggestion for conversation ${result.conversationId}`);
+            }
+
+            vehicleDet = { idType, rawValue: identifier, normalizedValue: identifier };
+          } else {
+            console.log(`[InboundHandler] Registration doc detected but no VIN/frame found in image`);
+          }
+        }
+
+        // Fallback: plain VIN extraction for images not classified as gearbox_tag or registration_doc
+        if (!vehicleDet && imageResult.type === "unknown") {
+          const vinFromImage = await extractVinFromImages(imageAttachments).catch(() => null);
+          if (vinFromImage) {
+            console.log(`[InboundHandler] VIN extracted via image OCR fallback: ${vinFromImage}`);
+            vehicleDet = { idType: "VIN", rawValue: vinFromImage, normalizedValue: vinFromImage };
+          }
         }
       }
     }
@@ -457,24 +507,27 @@ export async function processIncomingMessageFull(
         });
         console.log(`[InboundHandler] Vehicle ID detected (${vehicleDet.idType}), created case ${row.id} and enqueued lookup`);
 
-        const tenant = await storage.getTenant(tenantId) ?? await storage.getDefaultTenant();
-        if (tenant) {
-          const templates = getMergedGearboxTemplates(tenant);
-          const idTypeLabel = vehicleDet.idType === "VIN" ? "VIN-коду" : "номеру кузова";
-          const suggestion = await storage.createAiSuggestion({
-            conversationId: result.conversationId,
-            messageId: result.messageId,
-            suggestedReply: fillGearboxTemplate(templates.gearboxTagRequest, { idType: idTypeLabel }),
-            intent: "gearbox_tag_request",
-            confidence: 1,
-            needsApproval: true,
-            needsHandoff: false,
-            questionsToAsk: [],
-            usedSources: [],
-            status: "pending",
-          });
-          realtimeService.broadcastNewSuggestion(tenant.id, result.conversationId, suggestion.id);
-          console.log(`[InboundHandler] Created gearbox_tag_request suggestion for vehicle lookup case ${row.id}`);
+        // Skip the generic gearbox_tag_request if we already created a registration_doc suggestion
+        if (imageAnalysisType !== "registration_doc") {
+          const tenant = await storage.getTenant(tenantId) ?? await storage.getDefaultTenant();
+          if (tenant) {
+            const templates = getMergedGearboxTemplates(tenant);
+            const idTypeLabel = vehicleDet.idType === "VIN" ? "VIN-коду" : "номеру кузова";
+            const suggestion = await storage.createAiSuggestion({
+              conversationId: result.conversationId,
+              messageId: result.messageId,
+              suggestedReply: fillGearboxTemplate(templates.gearboxTagRequest, { idType: idTypeLabel }),
+              intent: "gearbox_tag_request",
+              confidence: 1,
+              needsApproval: true,
+              needsHandoff: false,
+              questionsToAsk: [],
+              usedSources: [],
+              status: "pending",
+            });
+            realtimeService.broadcastNewSuggestion(tenant.id, result.conversationId, suggestion.id);
+            console.log(`[InboundHandler] Created gearbox_tag_request suggestion for vehicle lookup case ${row.id}`);
+          }
         }
       }
       return;
