@@ -50,6 +50,34 @@ Return the market model name (e.g. JF016E, K313, W5MBB) confirmed by actual list
 If web search confirms the model — set confidence: "high".
 If web search is inconclusive — set confidence: "medium".`;
 
+// GPT-4.1 with web_search often prepends reasoning text before the JSON block.
+// This function finds the JSON object wherever it appears in the response.
+function extractJsonFromText(text: string): string {
+  // First try: strip markdown fences (handles clean ```json ... ``` responses)
+  const stripped = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+
+  if (stripped.startsWith("{")) return stripped;
+
+  // Second try: last JSON object in text (GPT tends to put JSON at the end)
+  const lastBrace = text.lastIndexOf("{");
+  const lastClose = text.lastIndexOf("}");
+  if (lastBrace !== -1 && lastClose > lastBrace) {
+    return text.slice(lastBrace, lastClose + 1);
+  }
+
+  // Third try: first JSON object in text
+  const firstBrace = text.indexOf("{");
+  const firstClose = text.indexOf("}");
+  if (firstBrace !== -1 && firstClose > firstBrace) {
+    return text.slice(firstBrace, firstClose + 1);
+  }
+
+  return stripped; // fallback — will likely throw in JSON.parse, caught upstream
+}
+
 const FALLBACK_RESULT: TransmissionIdentification = {
   modelName: null,
   manufacturer: null,
@@ -102,13 +130,10 @@ export async function identifyTransmissionByOem(
     });
 
     const raw: string = response.output_text ?? "";
-    const stripped = raw.trim()
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```\s*$/i, "")
-      .trim();
+    const stripped = extractJsonFromText(raw);
 
     console.log("[TransmissionIdentifier] GPT response:", raw);
-    console.log("[TransmissionIdentifier] Stripped response:", stripped);
+    console.log("[TransmissionIdentifier] Extracted JSON:", stripped);
 
     const parsed = JSON.parse(stripped) as Partial<TransmissionIdentification>;
 

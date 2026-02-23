@@ -51,13 +51,14 @@ function buildResultSuggestionText(
   gearbox: GearboxInfo,
   evidence: Record<string, unknown>,
   lookupConfidence: number,
-  idType: string
+  idType: string,
+  gearboxType?: string
 ): string {
   const source = (evidence.sourceSelected as string) ?? (evidence.source as string) ?? "";
   const oem = gearbox.oem ?? "";
   const model = gearbox.model ?? "";
   const factoryCode = gearbox.factoryCode ?? "";
-  const params = { oem, model, source, factoryCode, idType: idTypeToLabel(idType) };
+  const params = { oem, model, source, factoryCode, idType: idTypeToLabel(idType), gearboxType: gearboxType ?? "" };
 
   if (gearbox.oemStatus === "MODEL_ONLY") {
     return fillGearboxTemplate(templates.gearboxLookupModelOnly, params);
@@ -79,10 +80,11 @@ async function createResultSuggestionIfNeeded(params: {
   evidence: Record<string, unknown>;
   lookupConfidence: number;
   idType: string;
+  gearboxType?: string;
 }): Promise<void> {
-  const { tenantId, conversationId, messageId, gearbox, evidence, lookupConfidence, idType } = params;
+  const { tenantId, conversationId, messageId, gearbox, evidence, lookupConfidence, idType, gearboxType } = params;
   const templates = await storage.getTenantTemplates(tenantId);
-  const suggestedReply = buildResultSuggestionText(templates, gearbox, evidence, lookupConfidence, idType);
+  const suggestedReply = buildResultSuggestionText(templates, gearbox, evidence, lookupConfidence, idType, gearboxType);
 
   const intent =
     (gearbox.oemStatus === "FOUND" && gearbox.oem) || gearbox.oemStatus === "MODEL_ONLY"
@@ -418,6 +420,12 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
     const src = (lookupResult.evidence?.sourceSelected as string) ?? (lookupResult.evidence?.source as string) ?? "podzamenu";
     console.log(`[VehicleLookupWorker] Case completed: ${caseId} - ${logValue} [${src}], lookup confidence: ${lookupConfidence.toFixed(2)}`);
 
+    const gearboxLabel =
+      vehicleContext.gearboxType === "CVT" ? "CVT (вариатор)" :
+      vehicleContext.gearboxType === "MT" ? "МКПП" :
+      vehicleContext.gearboxType === "AT" ? "АКПП" :
+      (vehicleContext.gearboxModelHint ?? "");
+
     await createResultSuggestionIfNeeded({
       tenantId,
       conversationId,
@@ -426,6 +434,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       evidence: lookupResult.evidence as Record<string, unknown>,
       lookupConfidence,
       idType,
+      gearboxType: gearboxLabel,
     });
 
     // ── Price lookup routing ───────────────────────────────────────────────────
