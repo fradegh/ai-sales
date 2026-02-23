@@ -72,25 +72,27 @@ function buildPrimaryQuery(
   vehicleDesc?: string | null
 ): string {
   const searchTerm = resolveSearchTerm(oem, modelName);
+  // Append OEM code only when it differs from searchTerm to avoid duplication
+  const oemSuffix = searchTerm !== oem ? ` ${oem}` : '';
   if (vehicleDesc) {
     switch (origin) {
       case "japan":
-        return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc} б/у из Японии`;
+        return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у из Японии`;
       case "europe":
-        return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc} б/у из Европы`;
+        return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у из Европы`;
       default:
-        return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc}`;
+        return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc}`;
     }
   }
   const gearboxCode = stripParenthetical(searchTerm);
   const makePart = make ? `${make} ` : "";
   switch (origin) {
     case "japan":
-      return `${gearboxLabel} ${makePart}${gearboxCode} контрактная б/у из Японии`;
+      return `${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} контрактная б/у из Японии`;
     case "europe":
-      return `${gearboxLabel} ${makePart}${gearboxCode} контрактная б/у из Европы`;
+      return `${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} контрактная б/у из Европы`;
     default:
-      return `${gearboxLabel} ${makePart}${gearboxCode} контрактная б/у`;
+      return `${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} контрактная б/у`;
   }
 }
 
@@ -102,12 +104,13 @@ function buildFallbackQuery(
   vehicleDesc?: string | null
 ): string {
   const searchTerm = resolveSearchTerm(oem, modelName);
+  const oemSuffix = searchTerm !== oem ? ` ${oem}` : '';
   if (vehicleDesc) {
-    return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc} цена купить`;
+    return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} цена купить`;
   }
   const gearboxCode = stripParenthetical(searchTerm);
   const makePart = make ? `${make} ` : "";
-  return `контрактная ${gearboxLabel} ${makePart}${gearboxCode} цена купить`;
+  return `контрактная ${gearboxLabel} ${makePart}${gearboxCode}${oemSuffix} цена купить`;
 }
 
 function isExcluded(text: string): boolean {
@@ -255,7 +258,7 @@ export async function searchUsedTransmissionPrice(
     // Embed output format instructions directly in the input — search models don't use system prompts
     const input =
       query +
-      "\n\nНайди актуальные объявления о продаже б/у и контрактных КПП на avito.ru, drom.ru, autopiter.ru, exist.ru. " +
+      "\n\nНайди актуальные объявления о продаже б/у и контрактных КПП на любых российских авто-сайтах, маркетплейсах и у дилеров запчастей. " +
       "Верни ТОЛЬКО JSON-массив без пояснений: " +
       '[{"title":"...","price":число_рублей,"mileage":число_км_или_null,"url":"...","site":"...","isUsed":true}]. ' +
       "ИСКЛЮЧАЙ новые и восстановленные коробки. ВКЛЮЧАЙ только б/у, контрактные, с разборки.";
