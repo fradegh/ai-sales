@@ -14,6 +14,7 @@ import { storage } from "../storage";
 import type { VehicleContext } from "../services/transmission-identifier";
 import { getSecret } from "../services/secret-resolver";
 import { decodeVinPartsApiWithRetry } from "../services/partsapi-vin-decoder";
+import { extractVehicleContextFromRawData } from "../services/vehicle-data-extractor";
 import { sanitizeForLog } from "../utils/sanitizer";
 
 const QUEUE_NAME = "vehicle_lookup_queue";
@@ -353,6 +354,24 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
     if (!vehicleContext.year && vm.year) {
       vehicleContext.year = String(vm.year);
       console.log(`[VehicleLookupWorker] year from Podzamenu vehicleMeta: ${vm.year}`);
+    }
+
+    // GPT extraction: universal fallback for driveType/gearboxType when all
+    // field-based parsing (modifikaciya, opcii, kpp) produced no result.
+    // Handles any manufacturer/market without per-field maintenance.
+    if ((!vehicleContext.driveType || !vehicleContext.gearboxType) && vehicleContext.partsApiRawData) {
+      console.log("[VehicleLookupWorker] driveType/gearboxType null — using GPT extraction");
+      const extracted = await extractVehicleContextFromRawData(
+        vehicleContext.partsApiRawData as Record<string, unknown>
+      );
+      if (!vehicleContext.driveType && extracted.driveType) {
+        vehicleContext.driveType = extracted.driveType;
+        console.log("[VehicleLookupWorker] driveType from GPT:", extracted.driveType);
+      }
+      if (!vehicleContext.gearboxType && extracted.gearboxType) {
+        vehicleContext.gearboxType = extracted.gearboxType;
+        console.log("[VehicleLookupWorker] gearboxType from GPT:", extracted.gearboxType);
+      }
     }
 
     console.log(
