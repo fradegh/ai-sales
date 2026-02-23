@@ -175,12 +175,14 @@ function parseListingsFromResponse(content: string): ParsedListing[] {
       for (const item of arr) {
         const price = typeof item.price === "number" ? item.price : parsePriceFromText(String(item.price ?? ""));
         if (!price) continue;
+        // Accept both {site, url} (old format) and {source} (new flexible format)
+        const siteValue = String(item.site ?? item.source ?? extractSiteName(String(item.url ?? "")));
         listings.push({
           title: String(item.title ?? ""),
           price,
           mileage: typeof item.mileage === "number" ? item.mileage : parseMileageFromText(String(item.mileage ?? "")),
           url: String(item.url ?? ""),
-          site: String(item.site ?? extractSiteName(String(item.url ?? ""))),
+          site: siteValue,
           isUsed: true,
         });
       }
@@ -253,15 +255,20 @@ export async function searchUsedTransmissionPrice(
     filteredOutCount: 0,
   };
 
+  // Russian market search — flexible price extraction, any Russian auto parts source
   const runSearch = async (query: string): Promise<ParsedListing[]> => {
     console.log(`[PriceSearcher] Web search query: "${query}"`);
-    // Embed output format instructions directly in the input — search models don't use system prompts
     const input =
       query +
-      "\n\nНайди актуальные объявления о продаже б/у и контрактных КПП на любых российских авто-сайтах, маркетплейсах и у дилеров запчастей. " +
-      "Верни ТОЛЬКО JSON-массив без пояснений: " +
-      '[{"title":"...","price":число_рублей,"mileage":число_км_или_null,"url":"...","site":"...","isUsed":true}]. ' +
-      "ИСКЛЮЧАЙ новые и восстановленные коробки. ВКЛЮЧАЙ только б/у, контрактные, с разборки.";
+      "\n\nSearch the Russian internet for prices of this used контрактная transmission.\n" +
+      "Find ANY price mentions from ANY source — marketplaces, dealer sites, price aggregators, forums, any Russian автозапчасти website.\n" +
+      "For each price found, return a JSON array item:\n" +
+      '{"price": <number in RUB, integers only>, "source": "<domain name>", "title": "<brief description>"}.\n' +
+      "If a source shows a price range (e.g. 'от 70 000 до 120 000 ₽'), create TWO entries with min and max.\n" +
+      "Do NOT require mileage or other structured fields.\n" +
+      "Return ONLY a valid JSON array. If nothing found, return [].\n" +
+      "EXCLUDE new and rebuilt units. INCLUDE only б/у, контрактные, с разборки.";
+    console.log('[PriceSearcher] Full search prompt:', input.substring(0, 1000));
     try {
       const response = await (openai as any).responses.create({
         model: "gpt-4.1",
@@ -280,9 +287,49 @@ export async function searchUsedTransmissionPrice(
     }
   };
 
-  // Primary search
+  // International fallback — searches Yahoo Auctions Japan, eBay, JDM/EU parts sites
+  // and converts prices to RUB using fixed Feb-2026 exchange rates
+  const runInternationalSearch = async (): Promise<ParsedListing[]> => {
+    const searchDesc = modelName ?? oem;
+    const input =
+      `Search international websites for prices of this used transmission: ${searchDesc} OEM ${oem}.\n` +
+      `Look on: Yahoo Auctions Japan (ヤフオク), eBay, JDM parts sites, ` +
+      `European parts dealers, any non-Russian auto parts website.\n` +
+      `For each price found, convert to Russian Rubles using these exchange rates (February 2026):\n` +
+      `1 JPY = 0.50 RUB\n1 USD = 76.8 RUB\n1 EUR = 90.4 RUB\n1 GBP = 103 RUB\n` +
+      `Return a JSON array: {"price": <converted RUB integer>, "source": "<site>", "title": "<description (original price in original currency)>"}.\n` +
+      `If price range found, return two entries (min and max).\n` +
+      `Return ONLY a valid JSON array. If nothing found, return [].`;
+    console.log('[PriceSearcher] Full search prompt:', input.substring(0, 1000));
+    try {
+      const response = await (openai as any).responses.create({
+        model: "gpt-4.1",
+        tools: [{ type: "web_search" }],
+        input,
+      });
+
+      const content: string = response.output_text ?? "";
+      console.log('[PriceSearcher] Raw GPT response (international):', content.substring(0, 2000));
+      const parsed = parseListingsFromResponse(content);
+      console.log('[PriceSearcher] International parsed listings:', parsed.length);
+      return parsed;
+    } catch (err: any) {
+      console.warn(`[PriceSearcher] International web search failed: ${err.message}`);
+      return [];
+    }
+  };
+
+  // Primary Russian search
   let rawListings = await runSearch(primaryQuery);
   let usedQuery = primaryQuery;
+
+  // International fallback when primary Russian search returns nothing
+  if (rawListings.length === 0) {
+    console.log('[PriceSearcher] No Russian results, trying international search...');
+    const intlResults = await runInternationalSearch();
+    console.log(`[PriceSearcher] International search yielded ${intlResults.length} listings`);
+    rawListings = intlResults;
+  }
 
   // Filter: exclude new/rebuilt
   let filteredOut = 0;
@@ -295,7 +342,7 @@ export async function searchUsedTransmissionPrice(
   });
   console.log(`[PriceSearcher] After keyword filter (primary): ${listings.length} kept, ${filteredOut} excluded`);
 
-  // Fallback search if < 2 valid listings
+  // Russian fallback search if still < 2 valid listings
   if (listings.length < 2) {
     console.log(`[PriceSearcher] Primary search yielded ${listings.length} listings, trying fallback`);
     rawListings = await runSearch(fallbackQuery);
