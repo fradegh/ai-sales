@@ -251,6 +251,31 @@ export function sanitizeForPrompt(text: string): string {
 }
 
 /**
+ * Sanitize any value for logging — truncates long strings and suppresses
+ * known binary/large fields (content, data, image, attachments).
+ * Safe to pass directly to console.log or JSON.stringify.
+ */
+export function sanitizeForLog(obj: unknown): unknown {
+  if (typeof obj === 'string' && obj.length > 300) {
+    return obj.substring(0, 100) + `...[truncated ${obj.length} chars]`;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeForLog);
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    return Object.fromEntries(
+      Object.entries(obj as Record<string, unknown>).map(([k, v]) => [
+        k,
+        k === 'content' || k === 'data' || k === 'image' || k === 'attachments'
+          ? '[binary/large data suppressed]'
+          : sanitizeForLog(v),
+      ])
+    );
+  }
+  return obj;
+}
+
+/**
  * Sanitize customer notes and comments.
  */
 export function sanitizeCustomerData(data: {

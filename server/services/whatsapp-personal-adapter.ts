@@ -11,6 +11,7 @@ import type { ChannelAdapter, ParsedIncomingMessage, ChannelSendResult } from ".
 import type { ChannelType } from "@shared/schema";
 import { featureFlagService } from "./feature-flags";
 import { processIncomingMessageFull } from "./inbound-message-handler";
+import { sanitizeForLog } from "../utils/sanitizer";
 import * as fs from "fs";
 import * as path from "path";
 import pino from "pino";
@@ -393,7 +394,7 @@ export class WhatsAppPersonalAdapter implements ChannelAdapter {
           const adapter = new WhatsAppPersonalAdapter(tenantId);
           const parsed = adapter.parseIncomingMessage(msg);
           
-          console.log(`[WhatsAppPersonal] Parsed result:`, parsed ? JSON.stringify(parsed) : "null");
+          console.log(`[WhatsAppPersonal] Parsed result:`, parsed ? JSON.stringify(sanitizeForLog(parsed)) : "null");
           
           if (parsed) {
             try {
@@ -614,7 +615,7 @@ export class WhatsAppPersonalAdapter implements ChannelAdapter {
           const adapter = new WhatsAppPersonalAdapter(tenantId);
           const parsed = adapter.parseIncomingMessage(msg);
           
-          console.log(`[WhatsAppPersonal] Parsed result:`, parsed ? JSON.stringify(parsed) : "null");
+          console.log(`[WhatsAppPersonal] Parsed result:`, parsed ? JSON.stringify(sanitizeForLog(parsed)) : "null");
           
           if (parsed) {
             try {

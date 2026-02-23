@@ -14,6 +14,7 @@ import { storage } from "../storage";
 import type { VehicleContext } from "../services/transmission-identifier";
 import { getSecret } from "../services/secret-resolver";
 import { decodeVinPartsApiWithRetry } from "../services/partsapi-vin-decoder";
+import { sanitizeForLog } from "../utils/sanitizer";
 
 const QUEUE_NAME = "vehicle_lookup_queue";
 
@@ -223,7 +224,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
 
   try {
     const lookupResult = await lookupByVehicleId({ idType, value: normalizedValue });
-    console.log(`[VehicleLookupWorker] Raw Podzamenu response:`, JSON.stringify(lookupResult, null, 2));
+    console.log(`[VehicleLookupWorker] Raw Podzamenu response:`, JSON.stringify(sanitizeForLog(lookupResult), null, 2));
     const { gearbox } = lookupResult;
 
     const hasOem = gearbox.oemStatus === "FOUND" && gearbox.oem;
@@ -254,7 +255,7 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       ? await decodeVinPartsApiWithRetry(normalizedValue, partsApiKey)
       : null;
 
-    console.log("[VehicleLookupWorker] PartsAPI result:", JSON.stringify(partsApi));
+    console.log("[VehicleLookupWorker] PartsAPI result:", JSON.stringify(sanitizeForLog(partsApi)));
 
     const partsApiKppHint =
       partsApi?.kpp && isValidTransmissionModel(partsApi.kpp) ? partsApi.kpp : null;

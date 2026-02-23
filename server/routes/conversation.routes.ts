@@ -11,7 +11,7 @@ import { scheduleDelayedMessage, cancelDelayedMessage, getDelayedJobs, getQueueM
 import { WhatsAppPersonalAdapter } from "../services/whatsapp-personal-adapter";
 import { recordTrainingSample, getTrainingSamples, exportTrainingSamples, type TrainingOutcome } from "../services/training-sample-service";
 import { addToLearningQueue } from "../services/learning-score-service";
-import { sanitizeString } from "../utils/sanitizer";
+import { sanitizeString, sanitizeForLog } from "../utils/sanitizer";
 import type { ParsedAttachment } from "../services/channel-adapter";
 
 // Multer instance for optional file uploads — memory storage, max 50 MB
@@ -591,7 +591,7 @@ async function sendToChannel(conversationId: string, text: string, tenantId: str
       const waAdapter = new WhatsAppPersonalAdapter(tenantId);
       console.log(`[Outbound] Sending WhatsApp message to ${recipientJid}`);
       channelSendResult = await waAdapter.sendMessage(recipientJid, text);
-      console.log(`[Outbound] Result:`, channelSendResult);
+      console.log(`[Outbound] Result:`, sanitizeForLog(channelSendResult));
     }
   } catch (channelError) {
     console.error("[Outbound] Channel send error:", channelError);
