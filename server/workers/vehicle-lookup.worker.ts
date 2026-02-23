@@ -265,10 +265,13 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       model: partsApi?.modelName ?? null,
       year: partsApi?.year ?? null,
       engine: partsApi?.engineCode ?? null,
-      body: null,
-      driveType: null,
+      body: partsApi?.bodyType ?? null,
+      driveType: partsApi?.driveType ?? null,
       gearboxModelHint,
       factoryCode,
+      gearboxType: partsApi?.gearboxType ?? null,
+      displacement: partsApi?.displacement ?? null,
+      partsApiRawData: partsApi?.rawData ?? null,
     };
 
     console.log(

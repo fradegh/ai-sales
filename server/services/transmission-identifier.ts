@@ -9,6 +9,9 @@ export interface VehicleContext {
   driveType?: string | null;
   gearboxModelHint?: string | null;
   factoryCode?: string | null;
+  gearboxType?: string | null;
+  displacement?: string | null;
+  partsApiRawData?: Record<string, unknown> | null;
 }
 
 export interface TransmissionIdentification {
@@ -54,29 +57,27 @@ export async function identifyTransmissionByOem(
   try {
     console.log(`[TransmissionIdentifier] vehicleContext received:`, JSON.stringify(context ?? null));
 
-    const contextLines: string[] = [];
-    if (context?.make || context?.model) {
-      contextLines.push(`Vehicle: ${[context.make, context.model].filter(Boolean).join(" ")}`);
+    const lines: string[] = [`OEM code: ${oem}.`];
+
+    if (context?.partsApiRawData) {
+      lines.push(`Full vehicle data from OEM catalog:`);
+      lines.push(JSON.stringify(context.partsApiRawData, null, 2));
+    } else {
+      if (context?.make || context?.model) {
+        lines.push(`Vehicle: ${[context.make, context.model].filter(Boolean).join(" ")}`);
+      }
+      if (context?.year) lines.push(`Year: ${context.year}`);
+      if (context?.engine) lines.push(`Engine code: ${context.engine}`);
+      if (context?.driveType) lines.push(`Drive type: ${context.driveType}`);
+      if (context?.gearboxModelHint) lines.push(`Gearbox model hint: ${context.gearboxModelHint}`);
     }
-    if (context?.year) contextLines.push(`Year: ${context.year}`);
-    if (context?.engine) contextLines.push(`Engine: ${context.engine}`);
-    if (context?.body) contextLines.push(`Chassis: ${context.body}`);
-    if (context?.driveType) contextLines.push(`Drive type: ${context.driveType}`);
-    if (context?.gearboxModelHint) contextLines.push(`Gearbox model hint from catalog: ${context.gearboxModelHint}`);
-    if (context?.factoryCode) contextLines.push(`Factory code: ${context.factoryCode}`);
 
-    const marketNameNote =
-      contextLines.length > 0
-        ? "Return modelName as it appears in Russian контрактные АКПП listings (e.g. 'F4A42', 'U660E') — NOT internal catalog or part numbers.\n"
-        : "";
+    lines.push(`\nBased on the above vehicle data and OEM code, identify the transmission.`);
+    lines.push(`Return modelName as it appears in Russian контрактные КПП listings (e.g. 'F4A42', 'W5MBB', 'S6FA', 'QCE') — NOT internal catalog or part numbers.`);
+    lines.push(`Identify: modelName, manufacturer, origin, confidence, notes.`);
 
-    const userPrompt =
-      `OEM code: ${oem}.\n` +
-      (contextLines.length > 0 ? contextLines.join("\n") + "\n" : "") +
-      marketNameNote +
-      `Identify: modelName, manufacturer, origin, confidence, notes.`;
-
-    console.log(`[TransmissionIdentifier] GPT prompt:\n${userPrompt}`);
+    const userPrompt = lines.join("\n");
+    console.log("[TransmissionIdentifier] Full GPT prompt:\n" + userPrompt);
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",

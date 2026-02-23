@@ -4,6 +4,11 @@ export interface PartsApiResult {
   year: string | null;
   engineCode: string | null;
   kpp: string | null;
+  driveType: string | null;
+  gearboxType: string | null;
+  displacement: string | null;
+  bodyType: string | null;
+  rawData: Record<string, unknown> | null;
 }
 
 /**
@@ -42,6 +47,11 @@ export async function decodeVinPartsApi(vin: string, apiKey: string): Promise<Pa
           : null,
       engineCode,
       kpp: d.kpp ?? null,
+      driveType: d.privod ?? null,
+      gearboxType: d.tip_kpp ?? null,
+      displacement: d.obem ?? d.rabochij_obem ?? null,
+      bodyType: d.tip_kuzova ?? d.kuzov ?? null,
+      rawData: d,
     };
   } catch (e) {
     console.warn("[PartsAPI] VIN decode failed:", e);
