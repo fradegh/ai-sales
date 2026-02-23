@@ -26,6 +26,11 @@ export async function recordTrainingSample(params: RecordSampleParams): Promise<
   if (policy?.forbiddenTopics && policy.forbiddenTopics.length > 0) {
     const textToCheck = `${userMessage} ${suggestion.suggestedReply} ${finalAnswer || ""}`;
     if (containsForbiddenTopic(textToCheck, policy.forbiddenTopics)) {
+      console.warn(
+        `[TrainingSample] Sample dropped — forbidden topic matched. ` +
+        `intent=${suggestion.intent}, outcome=${outcome}, ` +
+        `conversationId=${suggestion.conversationId}`
+      );
       return null;
     }
   }

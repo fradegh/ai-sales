@@ -786,11 +786,13 @@ export class DatabaseStorage implements IStorage {
           eq(aiTrainingSamples.tenantId, tenantId),
           eq(aiTrainingSamples.outcome, outcome)
         ))
-        .orderBy(desc(aiTrainingSamples.createdAt));
+        .orderBy(desc(aiTrainingSamples.createdAt))
+        .limit(200);
     }
     return db.select().from(aiTrainingSamples)
       .where(eq(aiTrainingSamples.tenantId, tenantId))
-      .orderBy(desc(aiTrainingSamples.createdAt));
+      .orderBy(desc(aiTrainingSamples.createdAt))
+      .limit(200);
   }
 
   async getAiTrainingSamplesCount(tenantId: string): Promise<number> {

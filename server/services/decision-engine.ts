@@ -612,22 +612,28 @@ export async function generateWithDecisionEngine(
   const customerContextBlock = buildCustomerContextBlock(context.customerMemory);
 
   let fewShotBlock = "";
-  const fewShotEnabled = await featureFlagService.isEnabled("FEW_SHOT_LEARNING", context.tenantId);
-  if (fewShotEnabled) {
-    try {
-      const fewShotConfig: Partial<FewShotConfig> = {
-        maxExamples: 5,
-        maxTokens: 1500,
-        minConfidence: 0.7,
-      };
-      const examples = await selectFewShotExamples(context.tenantId, fewShotConfig);
-      if (examples.length > 0) {
-        const { promptBlock } = buildFewShotPromptBlock(examples, fewShotConfig.maxTokens || 1500);
-        fewShotBlock = promptBlock;
-      }
-    } catch (error) {
-      console.warn("[Decision Engine] Few-shot learning failed, continuing without examples:", error);
+  try {
+    // Derive a preferredIntent hint from the customer's most frequent topic so the
+    // +0.5 relevance boost in scoreExample fires for topic-matching examples.
+    // Falls back to undefined for first-time customers (no history yet).
+    const frequentTopics = context.customerMemory?.frequentTopics as Record<string, number> | null | undefined;
+    const preferredIntent = frequentTopics && Object.keys(frequentTopics).length > 0
+      ? Object.entries(frequentTopics).sort(([, a], [, b]) => b - a)[0][0]
+      : undefined;
+
+    const fewShotConfig: Partial<FewShotConfig> = {
+      maxExamples: 5,
+      maxTokens: 1500,
+      minConfidence: 0.7,
+      preferredIntent,
+    };
+    const examples = await selectFewShotExamples(context.tenantId, fewShotConfig);
+    if (examples.length > 0) {
+      const { promptBlock } = buildFewShotPromptBlock(examples, fewShotConfig.maxTokens || 1500);
+      fewShotBlock = promptBlock;
     }
+  } catch (error) {
+    console.warn("[Decision Engine] Few-shot learning failed, continuing without examples:", error);
   }
 
   const basePrompt = buildSystemPrompt(context.tenant, agentSettings, autoPartsEnabled);

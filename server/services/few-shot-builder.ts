@@ -164,10 +164,10 @@ function scoreExample(
 ): number {
   let score = 1.0;
   
-  if (sample.outcome === "APPROVED") {
-    score += 0.2;
-  } else if (sample.outcome === "EDITED") {
-    score += 0.1;
+  if (sample.outcome === "EDITED") {
+    score += 0.5;   // operator corrected the AI → highest training signal
+  } else if (sample.outcome === "APPROVED") {
+    score += 0.2;   // AI was already correct → lower priority
   }
   
   if (config.preferredIntent && sample.intent === config.preferredIntent) {

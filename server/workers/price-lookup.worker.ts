@@ -268,21 +268,20 @@ async function buildPriceReply(opts: PriceReplyOptions): Promise<string> {
     console.warn(`[PriceLookupWorker] Failed to load price_result template: ${err.message}`);
   }
 
-  // Legacy fallback text
-  let text = `Цена по OEM ${oem ?? displayLabel}: ${minPrice.toLocaleString("ru-RU")} — ${maxPrice.toLocaleString("ru-RU")} ₽`;
-  if (salePrice !== minPrice) {
-    text += ` (средняя: ${salePrice.toLocaleString("ru-RU")} ₽)`;
+  // Friendly fallback — same voice as OEM paths A/B/C
+  const label = displayLabel;
+  let text: string;
+  if (minPrice === maxPrice) {
+    text =
+      `Контрактная КПП ${label} — ` +
+      `цена ${minPrice.toLocaleString("ru-RU")} ₽. ` +
+      `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
+  } else {
+    text =
+      `Контрактные КПП ${label} есть в нескольких вариантах — ` +
+      `от ${minPrice.toLocaleString("ru-RU")} до ${maxPrice.toLocaleString("ru-RU")} ₽. ` +
+      `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
   }
-  if (originLabel) {
-    text += `\n🌍 Происхождение: ${originLabel}`;
-  }
-  if (mileageRange) {
-    text += `\n🛣️ Пробег: ${mileageRange}`;
-  }
-  if ((snapshot.listingsCount ?? 0) > 0) {
-    text += `\n📊 Найдено объявлений: ${snapshot.listingsCount}`;
-  }
-  text += `\nОбновлено: ${timeStr}. Источник: ${snapshot.source}.`;
   return text;
 }
 
@@ -762,8 +761,8 @@ async function lookupPricesByFallback(
           tenantId,
           oem: searchKey,
           source: webResult.source,
-          minPrice: salePrice,
-          maxPrice: salePrice,
+          minPrice: webResult.minPrice,
+          maxPrice: webResult.maxPrice,
           avgPrice: salePrice,
           marketMinPrice: webResult.minPrice,
           marketMaxPrice: webResult.maxPrice,

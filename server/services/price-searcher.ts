@@ -148,13 +148,6 @@ function extractSiteName(url: string): string {
   }
 }
 
-function removeOutliers(prices: number[]): number[] {
-  if (prices.length < 3) return prices;
-  prices.sort((a, b) => a - b);
-  const median = prices[Math.floor(prices.length / 2)];
-  return prices.filter((p) => p <= median * 3);
-}
-
 interface ParsedListing {
   title: string;
   price: number;
@@ -162,6 +155,40 @@ interface ParsedListing {
   url: string;
   site: string;
   isUsed: boolean;
+}
+
+function removeOutliers(prices: number[]): number[] {
+  if (prices.length < 4) return prices;
+
+  const sorted = [...prices].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.floor(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+
+  const lowerBound = q1 - 1.5 * iqr;
+  const upperBound = q3 + 1.5 * iqr;
+
+  return prices.filter(p => p >= lowerBound && p <= upperBound);
+}
+
+function validatePrices(listings: ParsedListing[]): ParsedListing[] {
+  if (listings.length < 2) return listings;
+
+  const prices = listings.map(l => l.price).sort((a, b) => a - b);
+  const median = prices[Math.floor(prices.length / 2)];
+
+  // Filter out any listing where price < 1% of median
+  // e.g. median=180000, threshold=1800 — catches unconverted USD/JPY
+  return listings.filter(l => {
+    if (l.price < median * 0.01) {
+      console.warn(
+        `[PriceSearcher] Suspicious price ${l.price} RUB from ${l.site} ` +
+        `(${(l.price / median * 100).toFixed(1)}% of median ${median}) — excluded`
+      );
+      return false;
+    }
+    return true;
+  });
 }
 
 function parseListingsFromResponse(content: string): ParsedListing[] {
@@ -280,7 +307,7 @@ export async function searchUsedTransmissionPrice(
 
       const content: string = response.output_text ?? "";
       console.log('[PriceSearcher] Raw GPT response:', content.substring(0, 2000));
-      const parsed = parseListingsFromResponse(content);
+      const parsed = validatePrices(parseListingsFromResponse(content));
       console.log('[PriceSearcher] Parsed listings count (price-validated):', parsed.length);
       return parsed;
     } catch (err: any) {
@@ -312,7 +339,7 @@ export async function searchUsedTransmissionPrice(
 
       const content: string = response.output_text ?? "";
       console.log('[PriceSearcher] Raw GPT response (international):', content.substring(0, 2000));
-      const parsed = parseListingsFromResponse(content);
+      const parsed = validatePrices(parseListingsFromResponse(content));
       console.log('[PriceSearcher] International parsed listings:', parsed.length);
       return parsed;
     } catch (err: any) {
