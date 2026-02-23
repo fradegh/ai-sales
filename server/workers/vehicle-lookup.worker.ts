@@ -274,14 +274,6 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
     const rawData = partsApi?.rawData as Record<string, string> | null | undefined;
     const modif = (rawData?.modifikaciya || '').toUpperCase();
 
-    // ── DEBUG: raw field values before any parsing ─────────────────────────────
-    console.log('[VehicleLookupWorker] DEBUG modifikaciya raw:', rawData?.modifikaciya);
-    console.log('[VehicleLookupWorker] DEBUG opcii raw:', rawData?.opcii);
-    console.log('[VehicleLookupWorker] DEBUG kpp raw:', rawData?.kpp ?? partsApi?.kpp);
-    console.log('[VehicleLookupWorker] DEBUG partsApi.driveType:', partsApi?.driveType);
-    console.log('[VehicleLookupWorker] DEBUG partsApi.gearboxType:', partsApi?.gearboxType);
-    // ──────────────────────────────────────────────────────────────────────────
-
     const parsedDriveType: string | null = modif.includes('4WD') || modif.includes('AWD')
       ? '4WD'
       : modif.includes('2WD') || modif.includes('FWD')
@@ -302,14 +294,36 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       );
     }
 
-    // ── DEBUG: state after modifikaciya block ──────────────────────────────────
-    console.log('[VehicleLookupWorker] DEBUG parsedDriveType after modifikaciya:', parsedDriveType);
-    console.log('[VehicleLookupWorker] DEBUG parsedGearboxType after modifikaciya:', parsedGearboxType);
-    // ── DEBUG: no opcii block exists yet — value that SHOULD set driveType ─────
-    console.log('[VehicleLookupWorker] DEBUG parsedDriveType after opcii:', parsedDriveType);
-    // ── DEBUG: no kpp→gearboxType block exists yet — value that SHOULD set it ──
-    console.log('[VehicleLookupWorker] DEBUG parsedGearboxType after kpp:', parsedGearboxType);
-    // ──────────────────────────────────────────────────────────────────────────
+    // Fallback: parse driveType from opcii if modifikaciya was empty/absent
+    // (Japanese market cars often have no modifikaciya but carry opcii like "Привод/Длина:4WD")
+    let mutableDriveType: string | null = parsedDriveType;
+    if (!mutableDriveType && rawData?.opcii) {
+      const opcii = String(rawData.opcii).toUpperCase();
+      if (opcii.includes('4WD') || opcii.includes('AWD') || opcii.includes('4X4')) {
+        mutableDriveType = '4WD';
+        console.log('[VehicleLookupWorker] driveType from opcii:', mutableDriveType);
+      } else if (opcii.includes('2WD') || opcii.includes('FWD') || opcii.includes('RWD')) {
+        mutableDriveType = '2WD';
+        console.log('[VehicleLookupWorker] driveType from opcii:', mutableDriveType);
+      }
+    }
+
+    // Fallback: parse gearboxType from rawData.kpp if modifikaciya was empty/absent
+    // (e.g. rawData.kpp = "CVT" for Nissan X-Trail NT32)
+    let mutableGearboxType: string | null = parsedGearboxType;
+    if (!mutableGearboxType && rawData?.kpp) {
+      const kpp = String(rawData.kpp).toUpperCase().trim();
+      if (kpp === 'CVT' || kpp.startsWith('CVT')) {
+        mutableGearboxType = 'CVT';
+      } else if (kpp === 'MT' || kpp.includes('/MT') || kpp.includes('MT,')) {
+        mutableGearboxType = 'MT';
+      } else if (kpp === 'AT' || kpp.includes('/AT') || kpp.includes('A/T')) {
+        mutableGearboxType = 'AT';
+      }
+      if (mutableGearboxType) {
+        console.log('[VehicleLookupWorker] gearboxType from kpp field:', mutableGearboxType);
+      }
+    }
 
     const vehicleContext: VehicleContext = {
       make: partsApi?.make ?? null,
@@ -317,10 +331,10 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       year: partsApi?.year ?? null,
       engine: partsApi?.engineCode ?? null,
       body: partsApi?.bodyType ?? null,
-      driveType: parsedDriveType ?? partsApi?.driveType ?? null,
+      driveType: mutableDriveType ?? partsApi?.driveType ?? null,
       gearboxModelHint,
       factoryCode,
-      gearboxType: parsedGearboxType ?? partsApi?.gearboxType ?? null,
+      gearboxType: mutableGearboxType ?? partsApi?.gearboxType ?? null,
       displacement: partsApi?.displacement ?? null,
       partsApiRawData: partsApi?.rawData ?? null,
     };
