@@ -4,6 +4,7 @@ import { getMergedGearboxTemplates, fillGearboxTemplate } from "./gearbox-templa
 import { detectGearboxType } from "./price-sources/types";
 import { realtimeService } from "./websocket-server";
 import { featureFlagService } from "./feature-flags";
+import { isValidVinChecksum, tryAutoCorrectVin } from "../utils/vin-validator";
 
 const VIN_CHARS = "A-HJ-NPR-Z0-9"; // VIN excludes I, O, Q
 const VIN_REGEX = new RegExp(`[${VIN_CHARS}]{17}`, "gi");
@@ -392,6 +393,18 @@ export async function processIncomingMessageFull(
     }
 
     let vehicleDet = detectVehicleIdFromText(text);
+
+    if (vehicleDet && vehicleDet.idType === "VIN" && !("isIncompleteVin" in vehicleDet)) {
+      if (!isValidVinChecksum(vehicleDet.normalizedValue)) {
+        const corrected = tryAutoCorrectVin(vehicleDet.normalizedValue);
+        if (corrected) {
+          console.log(`[InboundHandler] Auto-corrected VIN: ${vehicleDet.normalizedValue} → ${corrected}`);
+          vehicleDet = { ...vehicleDet, normalizedValue: corrected };
+        }
+        // If not correctable — still proceed; the pipeline handles invalid VINs downstream
+      }
+    }
+
     let imageAnalysisType: "gearbox_tag" | "registration_doc" | null = null;
 
     // If no VIN/FRAME in text but there are image attachments → classify image
@@ -454,7 +467,15 @@ export async function processIncomingMessageFull(
           const vinFromImage = await extractVinFromImages(imageAttachments).catch(() => null);
           if (vinFromImage) {
             console.log(`[InboundHandler] VIN extracted via image OCR fallback: ${vinFromImage}`);
-            vehicleDet = { idType: "VIN", rawValue: vinFromImage, normalizedValue: vinFromImage };
+            let correctedVin = vinFromImage;
+            if (!isValidVinChecksum(vinFromImage)) {
+              const corrected = tryAutoCorrectVin(vinFromImage);
+              if (corrected) {
+                console.log(`[InboundHandler] Auto-corrected OCR fallback VIN: ${vinFromImage} → ${corrected}`);
+                correctedVin = corrected;
+              }
+            }
+            vehicleDet = { idType: "VIN", rawValue: vinFromImage, normalizedValue: correctedVin };
           }
         }
       }

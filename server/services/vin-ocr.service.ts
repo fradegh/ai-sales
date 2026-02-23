@@ -1,4 +1,5 @@
 import { openai } from "./decision-engine";
+import { isValidVinChecksum, tryAutoCorrectVin } from "../utils/vin-validator";
 
 const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/i;
 
@@ -82,6 +83,57 @@ export async function analyzeImage(
 }
 
 /**
+ * Strategy 2: sends the same image to GPT-4o a second time with a targeted prompt
+ * that names the previously-read (checksum-invalid) VIN and highlights confusion pairs.
+ * Also runs strategy 1 (single-char substitution) on GPT's new attempt.
+ * Returns a checksum-valid VIN string, or null if the retry still fails.
+ */
+async function retryVinReadWithGpt(url: string, previousVin: string): Promise<string | null> {
+  const retryPrompt =
+    `Look at this vehicle registration document image again.\n` +
+    `You previously read the VIN as: ${previousVin}\n` +
+    `This VIN has an invalid checksum — there is likely a misread character.\n\n` +
+    `Pay special attention to these visually similar pairs:\n` +
+    `- Letter S vs digit 5\n` +
+    `- Letter B vs digit 8\n` +
+    `- Letter Z vs digit 2\n` +
+    `- Letter G vs digit 6\n` +
+    `- Letter I vs digit 1\n` +
+    `- Letter O vs digit 0 (O is never valid in VIN)\n\n` +
+    `Read the VIN again very carefully, character by character.\n` +
+    `Return ONLY the 17-character VIN, nothing else.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url, detail: "high" } },
+            { type: "text", text: retryPrompt },
+          ],
+        },
+      ],
+      max_tokens: 50,
+      temperature: 0,
+    });
+
+    const text = (response.choices[0]?.message?.content ?? "").trim().toUpperCase();
+    if (!VIN_RE.test(text)) return null;
+
+    if (isValidVinChecksum(text)) return text;
+
+    // Apply strategy 1 on GPT's new attempt as well
+    const corrected = tryAutoCorrectVin(text);
+    return corrected ?? null;
+  } catch (e) {
+    console.error(`[VinOCR] GPT VIN retry failed:`, e);
+    return null;
+  }
+}
+
+/**
  * Iterates over attachments and returns the first non-unknown ImageAnalysisResult.
  * Falls back to { type: "unknown" } if all attachments are unclassified or fail.
  */
@@ -95,8 +147,29 @@ export async function analyzeImages(
     console.log(`[VinOCR] Analyzing attachment: ${logSafeUrl(url)}`);
 
     try {
-      const result = await analyzeImage(attachment);
+      let result = await analyzeImage(attachment);
       console.log(`[VinOCR] Image analysis result: ${JSON.stringify(result)}`);
+
+      if (result.type === "registration_doc" && result.vin) {
+        if (!isValidVinChecksum(result.vin)) {
+          // Strategy 1: single-char substitution
+          const corrected = tryAutoCorrectVin(result.vin);
+          if (corrected) {
+            console.log(`[VinOCR] Auto-corrected registration_doc VIN: ${result.vin} → ${corrected}`);
+            result = { ...result, vin: corrected };
+          } else {
+            // Strategy 2: ask GPT to re-read the image with targeted guidance
+            console.warn(`[VinOCR] registration_doc VIN checksum invalid, trying GPT retry: ${result.vin}`);
+            const gptRetry = await retryVinReadWithGpt(url, result.vin);
+            if (gptRetry) {
+              console.log(`[VinOCR] GPT retry corrected registration_doc VIN: ${result.vin} → ${gptRetry}`);
+              result = { ...result, vin: gptRetry };
+            } else {
+              console.warn(`[VinOCR] registration_doc VIN still invalid after GPT retry: ${result.vin}`);
+            }
+          }
+        }
+      }
 
       if (result.type !== "unknown") {
         return result;
@@ -151,8 +224,27 @@ export async function extractVinFromImages(
 
       const text = (response.choices[0]?.message?.content ?? "").trim();
       if (text && text !== "null" && VIN_RE.test(text)) {
-        console.log(`[VinOCR] Extracted VIN: ${text}`);
-        return text.toUpperCase();
+        let extractedVin = text.toUpperCase();
+        if (!isValidVinChecksum(extractedVin)) {
+          // Strategy 1: single-char substitution
+          const corrected = tryAutoCorrectVin(extractedVin);
+          if (corrected) {
+            console.log(`[VinOCR] Auto-corrected VIN: ${extractedVin} → ${corrected}`);
+            extractedVin = corrected;
+          } else {
+            // Strategy 2: ask GPT to re-read the image with targeted guidance
+            console.warn(`[VinOCR] VIN checksum invalid, trying GPT retry: ${extractedVin}`);
+            const gptRetry = await retryVinReadWithGpt(url, extractedVin);
+            if (gptRetry) {
+              console.log(`[VinOCR] GPT retry corrected VIN: ${extractedVin} → ${gptRetry}`);
+              extractedVin = gptRetry;
+            } else {
+              console.warn(`[VinOCR] VIN still invalid after GPT retry: ${extractedVin}`);
+            }
+          }
+        }
+        console.log(`[VinOCR] Extracted VIN: ${extractedVin}`);
+        return extractedVin;
       }
 
       console.log(`[VinOCR] No VIN found in attachment (response: "${text}")`);

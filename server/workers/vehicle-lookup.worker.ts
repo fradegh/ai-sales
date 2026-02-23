@@ -13,7 +13,7 @@ import { detectGearboxType } from "../services/price-sources/types";
 import { storage } from "../storage";
 import type { VehicleContext } from "../services/transmission-identifier";
 import { getSecret } from "../services/secret-resolver";
-import { decodeVinPartsApiWithRetry } from "../services/partsapi-vin-decoder";
+import { decodeVinPartsApiWithRetry, type PartsApiResult } from "../services/partsapi-vin-decoder";
 import { extractVehicleContextFromRawData } from "../services/vehicle-data-extractor";
 import { sanitizeForLog } from "../utils/sanitizer";
 
@@ -225,19 +225,26 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
 
   await storage.updateVehicleLookupCaseStatus(caseId, { status: "RUNNING" });
 
+  // Hoisted outside try so it is accessible in the PODZAMENU_NOT_FOUND catch branch
+  // (Strategy 3: use PartsAPI result even when Podzamenu returns NOT_FOUND).
+  // Initialised to a resolved-null promise; reassigned inside try after getSecret.
+  let partsApiPromise: Promise<PartsApiResult | null> = Promise.resolve(null);
+
   try {
     // BUG 5: Run Podzamenu and PartsAPI in parallel to reduce worst-case latency
     // from ~285 s (sequential) to ~75 s (parallel).
     // BUG 1: PartsAPI supports FRAME numbers — remove idType === "VIN" guard.
     const partsApiKey = await getSecret({ scope: "global", keyName: "PARTSAPI_KEY" });
+    partsApiPromise = partsApiKey
+      ? decodeVinPartsApiWithRetry(normalizedValue, partsApiKey).catch((err: Error) => {
+          console.warn(`[VehicleLookupWorker] PartsAPI failed, continuing without it: ${err?.message}`);
+          return null;
+        })
+      : Promise.resolve(null);
+
     const [lookupResult, partsApi] = await Promise.all([
       lookupByVehicleId({ idType, value: normalizedValue }),
-      partsApiKey
-        ? decodeVinPartsApiWithRetry(normalizedValue, partsApiKey).catch((err: Error) => {
-            console.warn(`[VehicleLookupWorker] PartsAPI failed, continuing without it: ${err?.message}`);
-            return null;
-          })
-        : Promise.resolve(null),
+      partsApiPromise,
     ]);
 
     console.log(`[VehicleLookupWorker] Raw Podzamenu response:`, JSON.stringify(sanitizeForLog(lookupResult), null, 2));
@@ -482,7 +489,42 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
     }
   } catch (error) {
     if (error instanceof PodzamenuLookupError && error.code === PODZAMENU_NOT_FOUND) {
-      console.log(`[VehicleLookupWorker] Case not found: ${caseId}`);
+      // Strategy 3: partsApiPromise already settled (it has its own .catch),
+      // re-awaiting it is instant and never throws.
+      const partsApi = await partsApiPromise;
+      if (partsApi?.make) {
+        console.log(
+          `[VehicleLookupWorker] Podzamenu NOT_FOUND but PartsAPI decoded VIN — running fallback for ${normalizedValue}`
+        );
+        const partsApiKppHint =
+          partsApi.kpp && isValidTransmissionModel(partsApi.kpp) ? partsApi.kpp : null;
+        const minimalGearbox: GearboxInfo = {
+          model: partsApiKppHint,
+          factoryCode: null,
+          oem: null,
+          oemCandidates: [],
+          oemStatus: "NOT_AVAILABLE",
+        };
+        await storage.updateVehicleLookupCaseStatus(caseId, {
+          status: "COMPLETED",
+          verificationStatus: "NEED_TAG_OPTIONAL",
+        });
+        await tryFallbackPriceLookup({
+          tenantId,
+          conversationId,
+          messageId: caseRow.messageId ?? undefined,
+          gearbox: minimalGearbox,
+          vehicleMeta: {
+            make: partsApi.make ?? undefined,
+            model: partsApi.modelName ?? undefined,
+            year: partsApi.year ? Number(partsApi.year) : undefined,
+          },
+        });
+        return;
+      }
+
+      // Both APIs failed — genuine invalid / not-found VIN
+      console.log(`[VehicleLookupWorker] Case not found (Podzamenu NOT_FOUND, PartsAPI empty): ${caseId}`);
       await storage.updateVehicleLookupCaseStatus(caseId, {
         status: "FAILED",
         error: "NOT_FOUND",
