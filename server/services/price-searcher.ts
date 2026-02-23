@@ -36,6 +36,28 @@ const EXCLUDE_KEYWORDS = [
   "rebuilt",
 ];
 
+// Keywords that indicate defective / damaged units — must be excluded.
+// "с разборки" alone is kept (it is a standard contractual term);
+// only "с разборки под запчасти" (damaged donor) is excluded.
+const DEFECT_KEYWORDS = [
+  "дефект",
+  "неисправн",
+  "не работ",
+  "пинает",
+  "толчок",
+  "рывок",
+  "на запчасти",
+  "под восстановление",
+  "требует ремонта",
+  "не едет",
+  "нет задней",
+  "нет передач",
+  "горит check",
+  "в ремонт",
+  "разбор",
+  "с разборки под запчасти",
+];
+
 // Keywords that indicate used / contract units — prioritized
 const PREFER_KEYWORDS = [
   "контрактная",
@@ -116,6 +138,11 @@ function buildFallbackQuery(
 function isExcluded(text: string): boolean {
   const lower = text.toLowerCase();
   return EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+function isDefective(text: string): boolean {
+  const lower = text.toLowerCase();
+  return DEFECT_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
 }
 
 function isPreferred(text: string): boolean {
@@ -360,10 +387,15 @@ export async function searchUsedTransmissionPrice(
     rawListings = intlResults;
   }
 
-  // Filter: exclude new/rebuilt
+  // Filter: exclude new/rebuilt and defective/damaged units
   let filteredOut = 0;
   let listings = rawListings.filter((l) => {
     if (isExcluded(l.title)) {
+      filteredOut++;
+      return false;
+    }
+    if (isDefective(l.title)) {
+      console.log(`[PriceSearcher] Excluded defective listing: "${l.title}" (${l.price} RUB)`);
       filteredOut++;
       return false;
     }
@@ -379,6 +411,11 @@ export async function searchUsedTransmissionPrice(
     filteredOut = 0;
     listings = rawListings.filter((l) => {
       if (isExcluded(l.title)) {
+        filteredOut++;
+        return false;
+      }
+      if (isDefective(l.title)) {
+        console.log(`[PriceSearcher] Excluded defective listing: "${l.title}" (${l.price} RUB)`);
         filteredOut++;
         return false;
       }

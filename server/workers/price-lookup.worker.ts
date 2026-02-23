@@ -269,18 +269,22 @@ async function buildPriceReply(opts: PriceReplyOptions): Promise<string> {
   }
 
   // Friendly fallback — same voice as OEM paths A/B/C.
-  // Strip leading "КПП" from displayLabel so the hardcoded "КПП" in the template
-  // does not produce "КПП КПП FAU(5A) …" for MODEL_ONLY mode.
-  const cleanLabel = displayLabel.replace(/^КПП\s*/i, "").trim();
+  // If displayLabel already contains a gearbox type (e.g. "АКПП AUDI Audi A" or
+  // "КПП FAU(5A) AUDI") do NOT prepend another type label; otherwise add "КПП".
+  const displayHasType = GEARBOX_TYPE_LABELS.some(
+    (t) => displayLabel.toUpperCase().includes(t.toUpperCase())
+  );
+  const singularPrefix = displayHasType ? "Контрактная" : "Контрактная КПП";
+  const pluralPrefix   = displayHasType ? "Контрактные" : "Контрактные КПП";
   let text: string;
   if (minPrice === maxPrice) {
     text =
-      `Контрактная КПП ${cleanLabel} — ` +
+      `${singularPrefix} ${displayLabel} — ` +
       `цена ${minPrice.toLocaleString("ru-RU")} ₽. ` +
       `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
   } else {
     text =
-      `Контрактные КПП ${cleanLabel} есть в нескольких вариантах — ` +
+      `${pluralPrefix} ${displayLabel} есть в нескольких вариантах — ` +
       `от ${minPrice.toLocaleString("ru-RU")} до ${maxPrice.toLocaleString("ru-RU")} ₽. ` +
       `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
   }
@@ -421,6 +425,11 @@ function pickGearboxLabel(gearboxType?: string | null): string {
 
 // ─── Transmission model validation ───────────────────────────────────────────
 
+// Labels used in customer-facing suggestion text — used to detect when a
+// displayName already contains the transmission type so we don't duplicate it
+// (e.g. "KIA Sportage АКПП" must not become "Контрактные АКПП KIA Sportage АКПП").
+const GEARBOX_TYPE_LABELS = ["АКПП", "МКПП", "вариатор", "CVT", "DSG", "робот", "КПП"];
+
 // BUG 3: These generic type strings must be rejected so GPT identification
 // runs and finds the real model name (e.g. JF016E, RE0F11A, W5MBB).
 const GEARBOX_TYPE_STRINGS = new Set([
@@ -472,8 +481,12 @@ async function lookupPricesByOem(
         (cached.modelName ??
         `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim()) ||
         (cached.oem ?? oem);
+      const nameHasTypeA = GEARBOX_TYPE_LABELS.some(
+        (t) => displayName.toUpperCase().includes(t.toUpperCase())
+      );
+      const replyPrefixA = nameHasTypeA ? "Контрактные" : `Контрактные ${gearboxLabel}`;
       const suggestedReply =
-        `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+        `${replyPrefixA} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
         `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
       const confidence = cached.source === "ai_estimate" ? 0.5 : 0.8;
       await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", confidence);
@@ -549,8 +562,12 @@ async function lookupPricesByOem(
         const { priceMin, priceMax } = aiEstimate;
         const avgPrice = Math.round((priceMin + priceMax) / 2);
         const displayName = effectiveDisplayName ?? oem;
+        const nameHasTypeB = GEARBOX_TYPE_LABELS.some(
+          (t) => displayName.toUpperCase().includes(t.toUpperCase())
+        );
+        const replyPrefixB = nameHasTypeB ? "Контрактные" : `Контрактные ${gearboxLabel}`;
         const suggestedReply =
-          `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+          `${replyPrefixB} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
           `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
         const aiSnapshot = await storage.createPriceSnapshot({
           tenantId: null,
@@ -613,8 +630,12 @@ async function lookupPricesByOem(
         (effectiveDisplayName ??
         `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim()) ||
         oem;
+      const nameHasTypeC = GEARBOX_TYPE_LABELS.some(
+        (t) => displayName.toUpperCase().includes(t.toUpperCase())
+      );
+      const replyPrefixC = nameHasTypeC ? "Контрактные" : `Контрактные ${gearboxLabel}`;
       const suggestedReply =
-        `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+        `${replyPrefixC} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
         `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
       await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.8);
       await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);

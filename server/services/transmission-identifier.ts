@@ -50,16 +50,18 @@ Return the market model name (e.g. JF016E, K313, W5MBB) confirmed by actual list
 If web search confirms the model — set confidence: "high".
 If web search is inconclusive — set confidence: "medium".`;
 
-// GPT-4.1 with web_search often prepends reasoning text before the JSON block.
-// This function finds the JSON object wherever it appears in the response.
+// GPT-4.1 with web_search often wraps the JSON in a code fence and then appends
+// explanation text after the closing ```. The old strip-from-ends approach failed
+// when the string did not end with ``` (explanation text followed).
+// This function extracts the JSON object robustly in three ordered attempts.
 function extractJsonFromText(text: string): string {
-  // First try: strip markdown fences (handles clean ```json ... ``` responses)
-  const stripped = text
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
-
-  if (stripped.startsWith("{")) return stripped;
+  // First try: extract content from within the first ```...``` block.
+  // Using a non-greedy match so we stop at the FIRST closing fence, not the last.
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    const blockContent = codeBlockMatch[1].trim();
+    if (blockContent.startsWith("{")) return blockContent;
+  }
 
   // Second try: last JSON object in text (GPT tends to put JSON at the end)
   const lastBrace = text.lastIndexOf("{");
@@ -75,7 +77,7 @@ function extractJsonFromText(text: string): string {
     return text.slice(firstBrace, firstClose + 1);
   }
 
-  return stripped; // fallback — will likely throw in JSON.parse, caught upstream
+  return text.trim(); // fallback — will likely throw in JSON.parse, caught upstream
 }
 
 const FALLBACK_RESULT: TransmissionIdentification = {
