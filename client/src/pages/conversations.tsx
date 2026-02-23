@@ -37,6 +37,7 @@ export default function Conversations() {
   const [replyAsCustomerText, setReplyAsCustomerText] = useState("");
   const [showReplyAsCustomer, setShowReplyAsCustomer] = useState(false);
   const [replyAsCustomerFile, setReplyAsCustomerFile] = useState<File | null>(null);
+  const [replyAsCustomerFilePreviewUrl, setReplyAsCustomerFilePreviewUrl] = useState<string | null>(null);
   const replyAsCustomerFileRef = useRef<HTMLInputElement>(null);
 
   // "Новый диалог" modal state
@@ -404,6 +405,19 @@ export default function Conversations() {
     });
   };
 
+  const clearReplyAsCustomerFile = () => {
+    if (replyAsCustomerFilePreviewUrl) URL.revokeObjectURL(replyAsCustomerFilePreviewUrl);
+    setReplyAsCustomerFile(null);
+    setReplyAsCustomerFilePreviewUrl(null);
+    if (replyAsCustomerFileRef.current) replyAsCustomerFileRef.current.value = "";
+  };
+
+  const setReplyAsCustomerFileWithPreview = (file: File | null) => {
+    if (replyAsCustomerFilePreviewUrl) URL.revokeObjectURL(replyAsCustomerFilePreviewUrl);
+    setReplyAsCustomerFile(file);
+    setReplyAsCustomerFilePreviewUrl(file ? URL.createObjectURL(file) : null);
+  };
+
   const handleSendAsCustomer = async () => {
     if (!selectedId || (!replyAsCustomerText.trim() && !replyAsCustomerFile)) return;
     let imageBase64: string | undefined;
@@ -428,7 +442,7 @@ export default function Conversations() {
       imageMimeType,
     });
     setReplyAsCustomerText("");
-    setReplyAsCustomerFile(null);
+    clearReplyAsCustomerFile();
     setShowReplyAsCustomer(false);
   };
 
@@ -674,7 +688,7 @@ export default function Conversations() {
                           {showReplyAsCustomer ? (
                             <div className="flex flex-col gap-2">
                               <Textarea
-                                placeholder="Сообщение от клиента..."
+                                placeholder="Сообщение от клиента... (или вставьте фото)"
                                 value={replyAsCustomerText}
                                 onChange={(e) => setReplyAsCustomerText(e.target.value)}
                                 className="min-h-[72px] resize-none text-sm"
@@ -685,10 +699,24 @@ export default function Conversations() {
                                       void handleSendAsCustomer();
                                     }
                                   }
-                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }
+                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); clearReplyAsCustomerFile(); }
+                                }}
+                                onPaste={(e) => {
+                                  const img = Array.from(e.clipboardData.files).find((f) => f.type.startsWith("image/"));
+                                  if (img) { e.preventDefault(); setReplyAsCustomerFileWithPreview(img); }
                                 }}
                                 autoFocus
                               />
+                              {replyAsCustomerFilePreviewUrl && (
+                                <div className="relative w-fit">
+                                  <img src={replyAsCustomerFilePreviewUrl} alt="Превью" className="max-h-20 rounded border object-cover" />
+                                  <button
+                                    type="button"
+                                    className="absolute -top-1 -right-1 bg-white rounded-full w-4 h-4 flex items-center justify-center shadow text-xs leading-none border"
+                                    onClick={clearReplyAsCustomerFile}
+                                  >×</button>
+                                </div>
+                              )}
                               <div className="flex items-center gap-1">
                                 <Button
                                   type="button"
@@ -699,10 +727,8 @@ export default function Conversations() {
                                   title="Прикрепить фото"
                                 >
                                   <Paperclip className="h-3.5 w-3.5" />
+                                  <span className="ml-1 text-xs">Фото</span>
                                 </Button>
-                                {replyAsCustomerFile && (
-                                  <span className="text-xs text-muted-foreground truncate max-w-[120px]">{replyAsCustomerFile.name} ✓</span>
-                                )}
                               </div>
                               <div className="flex gap-2">
                                 <Button
@@ -714,7 +740,7 @@ export default function Conversations() {
                                   <Send className="mr-1.5 h-3.5 w-3.5" />
                                   Отправить
                                 </Button>
-                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }}>
+                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); clearReplyAsCustomerFile(); }}>
                                   <X className="h-3.5 w-3.5" />
                                 </Button>
                               </div>
@@ -766,7 +792,7 @@ export default function Conversations() {
                           {showReplyAsCustomer ? (
                             <div className="flex flex-col gap-2">
                               <Textarea
-                                placeholder="Сообщение от клиента..."
+                                placeholder="Сообщение от клиента... (или вставьте фото)"
                                 value={replyAsCustomerText}
                                 onChange={(e) => setReplyAsCustomerText(e.target.value)}
                                 className="min-h-[72px] resize-none text-sm"
@@ -777,10 +803,24 @@ export default function Conversations() {
                                       void handleSendAsCustomer();
                                     }
                                   }
-                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }
+                                  if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); clearReplyAsCustomerFile(); }
+                                }}
+                                onPaste={(e) => {
+                                  const img = Array.from(e.clipboardData.files).find((f) => f.type.startsWith("image/"));
+                                  if (img) { e.preventDefault(); setReplyAsCustomerFileWithPreview(img); }
                                 }}
                                 autoFocus
                               />
+                              {replyAsCustomerFilePreviewUrl && (
+                                <div className="relative w-fit">
+                                  <img src={replyAsCustomerFilePreviewUrl} alt="Превью" className="max-h-20 rounded border object-cover" />
+                                  <button
+                                    type="button"
+                                    className="absolute -top-1 -right-1 bg-white rounded-full w-4 h-4 flex items-center justify-center shadow text-xs leading-none border"
+                                    onClick={clearReplyAsCustomerFile}
+                                  >×</button>
+                                </div>
+                              )}
                               <div className="flex items-center gap-1">
                                 <Button
                                   type="button"
@@ -791,10 +831,8 @@ export default function Conversations() {
                                   title="Прикрепить фото"
                                 >
                                   <Paperclip className="h-3.5 w-3.5" />
+                                  <span className="ml-1 text-xs">Фото</span>
                                 </Button>
-                                {replyAsCustomerFile && (
-                                  <span className="text-xs text-muted-foreground truncate max-w-[120px]">{replyAsCustomerFile.name} ✓</span>
-                                )}
                               </div>
                               <div className="flex gap-2">
                                 <Button
@@ -806,7 +844,7 @@ export default function Conversations() {
                                   <Send className="mr-1.5 h-3.5 w-3.5" />
                                   Отправить
                                 </Button>
-                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }}>
+                                <Button size="sm" variant="ghost" onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); clearReplyAsCustomerFile(); }}>
                                   <X className="h-3.5 w-3.5" />
                                 </Button>
                               </div>
@@ -837,7 +875,7 @@ export default function Conversations() {
                 {showReplyAsCustomer ? (
                   <div className="flex flex-col gap-2">
                     <Textarea
-                      placeholder="Сообщение от клиента..."
+                      placeholder="Сообщение от клиента... (или вставьте фото)"
                       value={replyAsCustomerText}
                       onChange={(e) => setReplyAsCustomerText(e.target.value)}
                       className="min-h-[72px] resize-none text-sm"
@@ -848,11 +886,25 @@ export default function Conversations() {
                             void handleSendAsCustomer();
                           }
                         }
-                        if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }
+                        if (e.key === "Escape") { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); clearReplyAsCustomerFile(); }
+                      }}
+                      onPaste={(e) => {
+                        const img = Array.from(e.clipboardData.files).find((f) => f.type.startsWith("image/"));
+                        if (img) { e.preventDefault(); setReplyAsCustomerFileWithPreview(img); }
                       }}
                       autoFocus
                       data-testid="textarea-customer-reply"
                     />
+                    {replyAsCustomerFilePreviewUrl && (
+                      <div className="relative w-fit">
+                        <img src={replyAsCustomerFilePreviewUrl} alt="Превью" className="max-h-20 rounded border object-cover" />
+                        <button
+                          type="button"
+                          className="absolute -top-1 -right-1 bg-white rounded-full w-4 h-4 flex items-center justify-center shadow text-xs leading-none border"
+                          onClick={clearReplyAsCustomerFile}
+                        >×</button>
+                      </div>
+                    )}
                     <div className="flex items-center gap-1">
                       <Button
                         type="button"
@@ -863,10 +915,8 @@ export default function Conversations() {
                         title="Прикрепить фото"
                       >
                         <Paperclip className="h-3.5 w-3.5" />
+                        <span className="ml-1 text-xs">Фото</span>
                       </Button>
-                      {replyAsCustomerFile && (
-                        <span className="text-xs text-muted-foreground truncate max-w-[120px]">{replyAsCustomerFile.name} ✓</span>
-                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button
@@ -882,7 +932,7 @@ export default function Conversations() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); setReplyAsCustomerFile(null); }}
+                        onClick={() => { setShowReplyAsCustomer(false); setReplyAsCustomerText(""); clearReplyAsCustomerFile(); }}
                       >
                         <X className="h-3.5 w-3.5" />
                       </Button>
@@ -914,7 +964,7 @@ export default function Conversations() {
       accept="image/*"
       className="hidden"
       onChange={(e) => {
-        setReplyAsCustomerFile(e.target.files?.[0] ?? null);
+        setReplyAsCustomerFileWithPreview(e.target.files?.[0] ?? null);
         e.target.value = "";
       }}
     />
