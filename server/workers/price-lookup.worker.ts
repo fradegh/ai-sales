@@ -268,17 +268,19 @@ async function buildPriceReply(opts: PriceReplyOptions): Promise<string> {
     console.warn(`[PriceLookupWorker] Failed to load price_result template: ${err.message}`);
   }
 
-  // Friendly fallback — same voice as OEM paths A/B/C
-  const label = displayLabel;
+  // Friendly fallback — same voice as OEM paths A/B/C.
+  // Strip leading "КПП" from displayLabel so the hardcoded "КПП" in the template
+  // does not produce "КПП КПП FAU(5A) …" for MODEL_ONLY mode.
+  const cleanLabel = displayLabel.replace(/^КПП\s*/i, "").trim();
   let text: string;
   if (minPrice === maxPrice) {
     text =
-      `Контрактная КПП ${label} — ` +
+      `Контрактная КПП ${cleanLabel} — ` +
       `цена ${minPrice.toLocaleString("ru-RU")} ₽. ` +
       `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
   } else {
     text =
-      `Контрактные КПП ${label} есть в нескольких вариантах — ` +
+      `Контрактные КПП ${cleanLabel} есть в нескольких вариантах — ` +
       `от ${minPrice.toLocaleString("ru-RU")} до ${maxPrice.toLocaleString("ru-RU")} ₽. ` +
       `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
   }
