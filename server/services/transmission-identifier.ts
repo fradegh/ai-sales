@@ -94,9 +94,18 @@ export async function identifyTransmissionByOem(
       max_tokens: 256,
     });
 
-    const raw = response.choices[0]?.message?.content?.trim() ?? "";
-    console.log(`[TransmissionIdentifier] GPT response: ${JSON.stringify(raw)}`);
-    const parsed = JSON.parse(raw) as Partial<TransmissionIdentification>;
+    const raw = response.choices[0]?.message?.content ?? '';
+    // Strip markdown code fences if present
+    const cleaned = raw
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+
+    console.log('[TransmissionIdentifier] GPT response:', raw);
+    console.log('[TransmissionIdentifier] Cleaned for parse:', cleaned);
+
+    const parsed = JSON.parse(cleaned) as Partial<TransmissionIdentification>;
 
     const validOrigins = ["japan", "europe", "korea", "usa", "unknown"] as const;
     const validConfidences = ["high", "medium", "low"] as const;

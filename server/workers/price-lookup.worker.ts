@@ -401,15 +401,18 @@ async function lookupPricesByOem(
     console.log(
       `[PriceLookupWorker] Using global cached snapshot ${cached.id} for OEM "${oem}" (source: ${cached.source})`
     );
-    if (cached.source === "ai_estimate") {
-      // ai_estimate snapshots have no listings — use the same custom reply text as when first created
-      const displayName = cached.modelName ?? cached.oem ?? oem;
+    if (cached.source === "ai_estimate" || cached.source === "openai_web_search") {
       const priceMin = cached.minPrice ?? 0;
       const priceMax = cached.maxPrice ?? 0;
+      const displayName =
+        cached.modelName ??
+        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} АКПП`.trim() ||
+        (cached.oem ?? oem);
       const suggestedReply =
         `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
         `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
-      await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.5);
+      const confidence = cached.source === "ai_estimate" ? 0.5 : 0.8;
+      await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", confidence);
       await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
     } else {
       await createPriceSuggestions(tenantId, conversationId, cached, agentSettings);
@@ -537,8 +540,22 @@ async function lookupPricesByOem(
         `(source: ${priceData.source}, expires: ${expiresAt.toISOString()})`
     );
 
-    // 5. Create suggestion for this tenant's conversation (two-step dialog)
-    await createPriceSuggestions(tenantId, conversationId, snapshot, agentSettings);
+    // 5. Create suggestion using customer-friendly template
+    if (snapshot.source === "openai_web_search") {
+      const priceMin = snapshot.minPrice ?? 0;
+      const priceMax = snapshot.maxPrice ?? 0;
+      const displayName =
+        effectiveDisplayName ??
+        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} АКПП`.trim() ||
+        oem;
+      const suggestedReply =
+        `Контрактные КПП ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
+        `Цена зависит от пробега и состояния. Какой бюджет вас интересует?`;
+      await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.8);
+      await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
+    } else {
+      await createPriceSuggestions(tenantId, conversationId, snapshot, agentSettings);
+    }
   } else {
     // Unexpected source — create a not_found suggestion
     console.warn(`[PriceLookupWorker] Unexpected source: ${(priceData as any).source}`);
