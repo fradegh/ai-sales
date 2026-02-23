@@ -365,28 +365,31 @@ async function estimatePriceFromAI(
       ? `Note: ${rarityHints.join('; ')}.\n`
       : '';
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "user",
-          content:
-            `You are an expert in the used auto parts market in Russia (drom.ru, avito.ru, farpost.ru).\n` +
-            `Give REALISTIC market prices for a USED КОНТРАКТНАЯ transmission:\n` +
-            `OEM code: ${oem}\n` +
-            `Transmission: ${transmissionDesc}\n` +
-            vehicleLine +
-            rarityNote +
-            `Base your estimate on actual listings on drom.ru and avito.ru.\n` +
-            `Respond ONLY with valid JSON, no markdown:\n` +
-            `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
-            `If uncertain, give a wider range. Always return numbers.`,
-        },
-      ],
-      max_tokens: 100,
+    const prompt =
+      `You are an expert in the used auto parts market in Russia (drom.ru, avito.ru, farpost.ru).\n` +
+      `Give REALISTIC market prices for a USED КОНТРАКТНАЯ transmission:\n` +
+      `OEM code: ${oem}\n` +
+      `Transmission: ${transmissionDesc}\n` +
+      vehicleLine +
+      rarityNote +
+      `Base your estimate on actual listings on drom.ru and avito.ru.\n` +
+      `Respond ONLY with valid JSON, no markdown:\n` +
+      `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
+      `If uncertain, give a wider range. Always return numbers.`;
+
+    console.log('[PriceLookupWorker] AI estimate prompt:', prompt);
+
+    const response = await (openai as any).responses.create({
+      model: "gpt-4.1",
+      tools: [{ type: "web_search" }],
+      input: prompt,
     });
 
-    const text = response.choices[0]?.message?.content?.trim() ?? "";
+    const raw: string = response.output_text ?? "";
+    const text = raw.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/i, '')
+      .trim();
     const parsed = JSON.parse(text) as unknown;
     if (
       typeof parsed === "object" &&
@@ -545,7 +548,7 @@ async function lookupPricesByOem(
           modelName: effectiveDisplayName ?? identification.modelName,
           manufacturer: identification.manufacturer,
           origin: identification.origin,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
           raw: { priceMin, priceMax, identification } as any,
           searchKey: oem,
         });

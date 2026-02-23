@@ -1226,6 +1226,23 @@ Get price history snapshots for a conversation.
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CONVERSATIONS")`
 - **Response 200:** `{ "snapshots": [...], "oem": "string | null" }`
 
+#### Price Lookup Worker Pipeline
+
+The `POST /api/conversations/:id/price-lookup` endpoint enqueues a BullMQ job processed by `server/workers/price-lookup.worker.ts`. The worker follows this pipeline for OEM-based lookups:
+
+1. **Global cache check** — `storage.getGlobalPriceSnapshot(oem)`. If a valid (non-expired) snapshot exists for any source, it is reused without new API calls.
+2. **Transmission identification** — `identifyTransmissionByOem(oem, vehicleContext)` via gpt-4o-mini (skipped if `oemModelHint` passes validation).
+3. **Web search** — `searchUsedTransmissionPrice(...)` via **gpt-4.1 + web_search** (OpenAI Responses API). Returns source `openai_web_search` with real listings, or `not_found` when fewer than 2 valid listings are found.
+4. **AI estimate fallback** — when step 3 returns `not_found`, `estimatePriceFromAI(...)` is called using **gpt-4.1 + web_search** (same Responses API). GPT searches drom.ru and avito.ru in real time and returns a `{priceMin, priceMax}` JSON estimate. The result is saved as an `ai_estimate` snapshot with a **2-hour TTL** so stale estimates expire quickly.
+
+**Price snapshot sources and cache TTLs:**
+
+| `source` | Description | TTL |
+|---|---|---|
+| `openai_web_search` | Real listings found via gpt-4.1 web search | 7 days |
+| `not_found` | Web search returned < 2 listings, no AI estimate | 24 hours |
+| `ai_estimate` | AI estimate via gpt-4.1 + web search (fallback) | **2 hours** |
+
 ---
 
 ### Message Templates
