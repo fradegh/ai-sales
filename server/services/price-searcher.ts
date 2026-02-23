@@ -54,49 +54,60 @@ function stripParenthetical(code: string): string {
   return idx !== -1 ? code.slice(0, idx).trim() : code.trim();
 }
 
+// Prefer GPT-identified market codes (e.g. W5MBB) over raw OEM catalog numbers
+// (e.g. 2500A230). OEM codes with 4+ consecutive digits are internal catalog refs
+// that produce poor search results.
+function resolveSearchTerm(oem: string, modelName: string | null): string {
+  if (!modelName) return oem;
+  if (/\d{4,}/.test(modelName)) return oem; // looks like an OEM/catalog number
+  return modelName;
+}
+
 function buildPrimaryQuery(
   oem: string,
   modelName: string | null,
   origin: Origin,
+  gearboxLabel: string,
   make?: string | null,
   vehicleDesc?: string | null
 ): string {
-  // When vehicle make+model is known, use OEM + vehicle desc for reliable results
-  // (avoids internal catalog codes that produce no search hits)
+  const searchTerm = resolveSearchTerm(oem, modelName);
   if (vehicleDesc) {
     switch (origin) {
       case "japan":
-        return `контрактная АКПП ${vehicleDesc} ${oem} б/у из Японии`;
+        return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc} б/у из Японии`;
       case "europe":
-        return `контрактная АКПП ${vehicleDesc} ${oem} б/у из Европы`;
+        return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc} б/у из Европы`;
       default:
-        return `контрактная АКПП ${vehicleDesc} ${oem}`;
+        return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc}`;
     }
   }
-  const gearboxCode = stripParenthetical(modelName ?? oem);
+  const gearboxCode = stripParenthetical(searchTerm);
   const makePart = make ? `${make} ` : "";
   switch (origin) {
     case "japan":
-      return `АКПП ${makePart}${gearboxCode} контрактная б/у из Японии`;
+      return `${gearboxLabel} ${makePart}${gearboxCode} контрактная б/у из Японии`;
     case "europe":
-      return `АКПП ${makePart}${gearboxCode} контрактная б/у из Европы`;
+      return `${gearboxLabel} ${makePart}${gearboxCode} контрактная б/у из Европы`;
     default:
-      return `АКПП ${makePart}${gearboxCode} контрактная б/у`;
+      return `${gearboxLabel} ${makePart}${gearboxCode} контрактная б/у`;
   }
 }
 
 function buildFallbackQuery(
   oem: string,
   modelName: string | null,
+  gearboxLabel: string,
   make?: string | null,
   vehicleDesc?: string | null
 ): string {
+  const searchTerm = resolveSearchTerm(oem, modelName);
   if (vehicleDesc) {
-    return `контрактная АКПП ${vehicleDesc} ${oem} цена купить`;
+    return `контрактная ${gearboxLabel} ${searchTerm} ${vehicleDesc} цена купить`;
   }
-  const gearboxCode = stripParenthetical(modelName ?? oem);
+  const gearboxCode = stripParenthetical(searchTerm);
   const makePart = make ? `${make} ` : "";
-  return `контрактная АКПП ${makePart}${gearboxCode} цена купить`;
+  return `контрактная ${gearboxLabel} ${makePart}${gearboxCode} цена купить`;
 }
 
 function isExcluded(text: string): boolean {
@@ -215,8 +226,15 @@ export async function searchUsedTransmissionPrice(
       ? `${vehicleContext.make} ${vehicleContext.model}`
       : null;
 
-  const primaryQuery = buildPrimaryQuery(oem, modelName, origin, make, vehicleDesc);
-  const fallbackQuery = buildFallbackQuery(oem, modelName, make, vehicleDesc);
+  // Derive correct Russian gearbox label from vehicleContext so queries use
+  // МКПП/вариатор/АКПП rather than always АКПП.
+  const gearboxLabel =
+    vehicleContext?.gearboxType === 'MT' ? 'МКПП' :
+    vehicleContext?.gearboxType === 'CVT' ? 'вариатор' :
+    'АКПП';
+
+  const primaryQuery = buildPrimaryQuery(oem, modelName, origin, gearboxLabel, make, vehicleDesc);
+  const fallbackQuery = buildFallbackQuery(oem, modelName, gearboxLabel, make, vehicleDesc);
 
   const notFoundResult: PriceSearchResult = {
     minPrice: 0,

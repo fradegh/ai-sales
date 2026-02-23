@@ -327,12 +327,23 @@ interface AiPriceEstimate {
 async function estimatePriceFromAI(
   oem: string,
   identification: { modelName: string | null; manufacturer: string | null },
-  vehicleContext?: VehicleContext
+  vehicleContext?: VehicleContext,
+  gearboxLabel: string = 'АКПП'
 ): Promise<AiPriceEstimate | null> {
   try {
-    const vehicleLine = vehicleContext
-      ? `Vehicle: ${vehicleContext.make ?? "unknown"} ${vehicleContext.model ?? "unknown"}, year: ${vehicleContext.year ?? "unknown"}, engine: ${vehicleContext.engine ?? "unknown"}\n`
-      : "";
+    // Build a specific transmission descriptor so GPT can price accurately.
+    // e.g. "МКПП W5MBB 4WD" is much more specific than just "OEM 2500A230".
+    const transmissionDesc = [
+      gearboxLabel,
+      identification.modelName,
+      vehicleContext?.driveType ?? null,
+    ].filter(Boolean).join(' ');
+
+    const vehicleLine = vehicleContext?.make || vehicleContext?.model
+      ? `Vehicle: ${vehicleContext.make ?? 'unknown'} ${vehicleContext.model ?? 'unknown'}` +
+        (vehicleContext.year ? `, ${vehicleContext.year}` : '') + '.\n'
+      : '';
+
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -340,9 +351,12 @@ async function estimatePriceFromAI(
           role: "user",
           content:
             `You are an expert in the used auto parts market in Russia (drom.ru, avito.ru, farpost.ru).\n` +
-            `Give approximate market prices for a used контрактная transmission with OEM code "${oem}" ` +
-            `(${identification.modelName ?? oem}, manufacturer: ${identification.manufacturer ?? "unknown"}).\n` +
+            `Give REALISTIC market prices for a USED КОНТРАКТНАЯ transmission:\n` +
+            `OEM code: ${oem}\n` +
+            `Transmission: ${transmissionDesc}\n` +
             vehicleLine +
+            `Base your estimate on actual listings on drom.ru and avito.ru. ` +
+            `Do NOT underestimate — rare 4WD manual gearboxes can cost 80,000–150,000 RUB or more.\n` +
             `Respond ONLY with valid JSON, no markdown:\n` +
             `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
             `If uncertain, give a wider range. Always return numbers.`,
@@ -491,7 +505,7 @@ async function lookupPricesByOem(
 
     // AI price estimate fallback when web search returns 0 listings
     if (isNotFound) {
-      const aiEstimate = await estimatePriceFromAI(oem, identification, vehicleContext);
+      const aiEstimate = await estimatePriceFromAI(oem, identification, vehicleContext, gearboxLabel);
       if (aiEstimate) {
         const { priceMin, priceMax } = aiEstimate;
         const avgPrice = Math.round((priceMin + priceMax) / 2);
