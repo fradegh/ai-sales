@@ -416,8 +416,8 @@ async function lookupPricesByOem(
       const priceMin = cached.minPrice ?? 0;
       const priceMax = cached.maxPrice ?? 0;
       const displayName =
-        cached.modelName ??
-        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim() ||
+        (cached.modelName ??
+        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim()) ||
         (cached.oem ?? oem);
       const suggestedReply =
         `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
@@ -557,8 +557,8 @@ async function lookupPricesByOem(
       const priceMin = snapshot.minPrice ?? 0;
       const priceMax = snapshot.maxPrice ?? 0;
       const displayName =
-        effectiveDisplayName ??
-        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim() ||
+        (effectiveDisplayName ??
+        `${vehicleContext?.make ?? ''} ${vehicleContext?.model ?? ''} ${gearboxLabel}`.trim()) ||
         oem;
       const suggestedReply =
         `Контрактные ${gearboxLabel} ${displayName} есть в нескольких вариантах — от ${priceMin.toLocaleString("ru-RU")} до ${priceMax.toLocaleString("ru-RU")} ₽. ` +
