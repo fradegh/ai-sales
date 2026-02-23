@@ -348,39 +348,28 @@ async function estimatePriceFromAI(
     const model = vehicleContext?.model ?? null;
     const year  = vehicleContext?.year  ?? null;
 
-    const vehicleLine = make || model
-      ? `Vehicle: ${make ?? 'unknown'} ${model ?? 'unknown'}` +
-        (year ? `, ${year}` : '') + '.\n'
-      : '';
-
     const driveType = vehicleContext?.driveType ?? null;
-
-    const rarityHints: string[] = [];
-    if (driveType === '4WD' || driveType === 'AWD') {
-      rarityHints.push('4WD/AWD transmissions are less common and typically cost more');
-    }
-    if (gearboxLabel === 'МКПП') {
-      rarityHints.push('manual transmissions are rarer in Russian контрактная market than automatics');
-    }
-    if (gearboxLabel === 'вариатор') {
-      rarityHints.push('CVT units vary widely in price depending on condition and mileage');
-    }
-
-    const rarityNote = rarityHints.length > 0
-      ? `Note: ${rarityHints.join('; ')}.\n`
-      : '';
+    const driveNote = driveType ? `Drive type: ${driveType}\n` : '';
 
     const prompt =
-      `You are an expert in the used auto parts market in Russia (drom.ru, avito.ru, farpost.ru).\n` +
-      `Give REALISTIC market prices for a USED КОНТРАКТНАЯ transmission:\n` +
-      `OEM code: ${oem}\n` +
+      `Search the internet RIGHT NOW for current prices of this used transmission in Russia:\n` +
       `Transmission: ${transmissionDesc}\n` +
-      vehicleLine +
-      rarityNote +
-      `Base your estimate on actual listings on drom.ru and avito.ru.\n` +
-      `Respond ONLY with valid JSON, no markdown:\n` +
-      `{"priceMin": <number in RUB rounded to 1000>, "priceMax": <number in RUB rounded to 1000>}\n` +
-      `If uncertain, give a wider range. Always return numbers.`;
+      `OEM: ${oem}\n` +
+      (make || model
+        ? `Vehicle: ${make ?? 'unknown'} ${model ?? 'unknown'}${year ? `, ${year}` : ''}\n`
+        : '') +
+      driveNote +
+      `Search ANY Russian auto parts source: avito.ru, drom.ru, farpost.ru, dvsavto.ru,\n` +
+      `kor-motor.ru, avtgr.ru, baza.drom.ru, abcp.ru, exist.ru, or any other\n` +
+      `Russian автозапчасти website that has б/у or контрактные listings.\n` +
+      `Instructions:\n` +
+      `- Find the lowest available price for a working б/у or контрактная unit\n` +
+      `- Find the highest reasonable price (exclude obviously new or fully rebuilt)\n` +
+      `- Return ONLY valid JSON, no markdown, no explanation:\n` +
+      `{"priceMin": <lowest found price in RUB rounded to 1000>, "priceMax": <highest reasonable price in RUB rounded to 1000>}\n` +
+      `- Use actual listing prices found — do NOT adjust or estimate\n` +
+      `- If no listings found, return a conservative range based on similar models\n` +
+      `- priceMax must not exceed 3x priceMin`;
 
     console.log('[PriceLookupWorker] AI estimate prompt:', prompt);
 
