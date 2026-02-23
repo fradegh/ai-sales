@@ -231,12 +231,14 @@ export async function searchUsedTransmissionPrice(
       ? `${vehicleContext.make} ${vehicleContext.model}`
       : null;
 
-  // Derive correct Russian gearbox label from vehicleContext so queries use
-  // МКПП/вариатор/АКПП rather than always АКПП.
+  // Derive correct Russian gearbox label from vehicleContext.
+  // BUG 4: null/unknown gearboxType uses neutral "КПП" to avoid incorrect
+  // АКПП in search queries and customer-facing responses.
   const gearboxLabel =
-    vehicleContext?.gearboxType === 'MT' ? 'МКПП' :
-    vehicleContext?.gearboxType === 'CVT' ? 'вариатор' :
-    'АКПП';
+    vehicleContext?.gearboxType === "MT" ? "МКПП" :
+    vehicleContext?.gearboxType === "CVT" ? "вариатор" :
+    vehicleContext?.gearboxType === "AT" ? "АКПП" :
+    "КПП";
 
   const primaryQuery = buildPrimaryQuery(oem, modelName, origin, gearboxLabel, make, vehicleDesc);
   const fallbackQuery = buildFallbackQuery(oem, modelName, gearboxLabel, make, vehicleDesc);

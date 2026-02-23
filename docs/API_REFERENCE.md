@@ -1226,14 +1226,34 @@ Get price history snapshots for a conversation.
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CONVERSATIONS")`
 - **Response 200:** `{ "snapshots": [...], "oem": "string | null" }`
 
+#### Vehicle Lookup Worker Pipeline
+
+The `POST /api/conversations/:id/vehicle-lookup-case` endpoint enqueues a BullMQ job processed by `server/workers/vehicle-lookup.worker.ts`. The worker follows this pipeline:
+
+1. **Parallel lookup** — Podzamenu and PartsAPI are called **simultaneously** via `Promise.all` to minimise latency (worst-case ~75 s vs ~285 s sequential).
+   - **Podzamenu** (`lookupByVehicleId`) — returns OEM code, gearbox model, factory code, OEM candidates, and `vehicleMeta` (make/model/year). Timeout 60 s, 3 retries.
+   - **PartsAPI** (`decodeVinPartsApiWithRetry`) — VIN **and FRAME** numbers are both supported (FRAME guard removed). Returns make, model, year, engine, kpp, driveType, gearboxType, displacement. Timeout 15 s, 3 retries. Failure is non-fatal (returns `null`, pipeline continues).
+2. **vehicleContext assembly** — PartsAPI fields are preferred; Podzamenu `vehicleMeta` (make/model/year) is used as fallback when PartsAPI returns no data. Critical for FRAME lookups.
+3. **gearboxType parsing** — extracted from PartsAPI `rawData.modifikaciya` field (e.g. `"5FM/T"` → `MT`, `"CVT"` → `CVT`).
+4. **Price lookup routing** — high-confidence OEM → `enqueuePriceLookup`; MODEL_ONLY → fallback search; no OEM → `tryFallbackPriceLookup`.
+
 #### Price Lookup Worker Pipeline
 
 The `POST /api/conversations/:id/price-lookup` endpoint enqueues a BullMQ job processed by `server/workers/price-lookup.worker.ts`. The worker follows this pipeline for OEM-based lookups:
 
 1. **Global cache check** — `storage.getGlobalPriceSnapshot(oem)`. If a valid (non-expired) snapshot exists for any source, it is reused without new API calls.
-2. **Transmission identification** — `identifyTransmissionByOem(oem, vehicleContext)` via gpt-4o-mini (skipped if `oemModelHint` passes validation).
+2. **Transmission identification** — `identifyTransmissionByOem(oem, vehicleContext)` via gpt-4o-mini. **Skipped** only when `oemModelHint` is a real transmission model code (e.g. `W5MBB`). Generic type strings (`CVT`, `AT`, `MT`, `АКПП`, etc.) are **rejected** by `isValidTransmissionModel` so GPT always runs for those and identifies the real model (e.g. `JF016E`, `RE0F11A`).
 3. **Web search** — `searchUsedTransmissionPrice(...)` via **gpt-4.1 + web_search** (OpenAI Responses API). Returns source `openai_web_search` with real listings, or `not_found` when fewer than 2 valid listings are found.
 4. **AI estimate fallback** — when step 3 returns `not_found`, `estimatePriceFromAI(...)` is called using **gpt-4.1 + web_search** (same Responses API). GPT searches drom.ru and avito.ru in real time and returns a `{priceMin, priceMax}` JSON estimate. The result is saved as an `ai_estimate` snapshot with a **2-hour TTL** so stale estimates expire quickly.
+
+**Gearbox label mapping** (`gearboxType` → Russian label used in search queries and replies):
+
+| `gearboxType` | Label |
+|---|---|
+| `MT` | МКПП |
+| `CVT` | вариатор |
+| `AT` | АКПП |
+| `null` / unknown | КПП *(neutral — avoids wrong АКПП assumption)* |
 
 **Price snapshot sources and cache TTLs:**
 

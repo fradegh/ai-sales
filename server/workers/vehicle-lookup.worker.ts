@@ -223,8 +223,22 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
   await storage.updateVehicleLookupCaseStatus(caseId, { status: "RUNNING" });
 
   try {
-    const lookupResult = await lookupByVehicleId({ idType, value: normalizedValue });
+    // BUG 5: Run Podzamenu and PartsAPI in parallel to reduce worst-case latency
+    // from ~285 s (sequential) to ~75 s (parallel).
+    // BUG 1: PartsAPI supports FRAME numbers — remove idType === "VIN" guard.
+    const partsApiKey = await getSecret({ scope: "global", keyName: "PARTSAPI_KEY" });
+    const [lookupResult, partsApi] = await Promise.all([
+      lookupByVehicleId({ idType, value: normalizedValue }),
+      partsApiKey
+        ? decodeVinPartsApiWithRetry(normalizedValue, partsApiKey).catch((err: Error) => {
+            console.warn(`[VehicleLookupWorker] PartsAPI failed, continuing without it: ${err?.message}`);
+            return null;
+          })
+        : Promise.resolve(null),
+    ]);
+
     console.log(`[VehicleLookupWorker] Raw Podzamenu response:`, JSON.stringify(sanitizeForLog(lookupResult), null, 2));
+    console.log("[VehicleLookupWorker] PartsAPI result:", JSON.stringify(sanitizeForLog(partsApi)));
     const { gearbox } = lookupResult;
 
     const hasOem = gearbox.oemStatus === "FOUND" && gearbox.oem;
@@ -249,13 +263,6 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       ? (gearbox.model ?? null)
       : null;
     const factoryCode = gearbox.factoryCode ?? null;
-
-    const partsApiKey = await getSecret({ scope: "global", keyName: "PARTSAPI_KEY" });
-    const partsApi = idType === "VIN" && partsApiKey
-      ? await decodeVinPartsApiWithRetry(normalizedValue, partsApiKey)
-      : null;
-
-    console.log("[VehicleLookupWorker] PartsAPI result:", JSON.stringify(sanitizeForLog(partsApi)));
 
     const partsApiKppHint =
       partsApi?.kpp && isValidTransmissionModel(partsApi.kpp) ? partsApi.kpp : null;
@@ -300,6 +307,22 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
       displacement: partsApi?.displacement ?? null,
       partsApiRawData: partsApi?.rawData ?? null,
     };
+
+    // BUG 2: Use Podzamenu vehicleMeta as fallback for make/model/year when
+    // PartsAPI returns no data (critical for FRAME lookups).
+    const vm = lookupResult.vehicleMeta as { make?: string; model?: string; year?: string | number };
+    if (!vehicleContext.make && typeof vm.make === "string" && vm.make) {
+      vehicleContext.make = vm.make;
+      console.log(`[VehicleLookupWorker] make from Podzamenu vehicleMeta: ${vm.make}`);
+    }
+    if (!vehicleContext.model && typeof vm.model === "string" && vm.model) {
+      vehicleContext.model = vm.model;
+      console.log(`[VehicleLookupWorker] model from Podzamenu vehicleMeta: ${vm.model}`);
+    }
+    if (!vehicleContext.year && vm.year) {
+      vehicleContext.year = String(vm.year);
+      console.log(`[VehicleLookupWorker] year from Podzamenu vehicleMeta: ${vm.year}`);
+    }
 
     console.log(
       `[VehicleLookupWorker] Final vehicleContext: make=${vehicleContext.make}, model=${vehicleContext.model}, ` +

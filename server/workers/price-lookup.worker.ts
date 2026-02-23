@@ -411,15 +411,29 @@ async function estimatePriceFromAI(
 // ─── Gearbox type → Russian label ────────────────────────────────────────────
 
 function pickGearboxLabel(gearboxType?: string | null): string {
-  if (gearboxType === 'MT') return 'МКПП';
-  if (gearboxType === 'CVT') return 'вариатор';
-  return 'АКПП';
+  if (gearboxType === "MT") return "МКПП";
+  if (gearboxType === "CVT") return "вариатор";
+  if (gearboxType === "AT") return "АКПП";
+  // BUG 4: unknown/null type → neutral label to avoid wrong AT assumption
+  return "КПП";
 }
 
 // ─── Transmission model validation ───────────────────────────────────────────
 
+// BUG 3: These generic type strings must be rejected so GPT identification
+// runs and finds the real model name (e.g. JF016E, RE0F11A, W5MBB).
+const GEARBOX_TYPE_STRINGS = new Set([
+  "CVT", "AT", "MT", "DCT", "AMT",
+  "АКПП", "МКПП", "ВАРИАТОР", "АВТОМАТ",
+  "AUTO", "MANUAL", "AUTOMATIC",
+]);
+
 function isValidTransmissionModel(model: string | null): boolean {
   if (!model) return false;
+  if (GEARBOX_TYPE_STRINGS.has(model.toUpperCase())) {
+    console.log(`[PriceLookupWorker] oemModelHint '${model}' is a type not a model — running GPT`);
+    return false;
+  }
   if (model.length > 12) return false;
   // Reject internal catalog codes with 4+ consecutive digits
   // e.g. M3MHD987579 contains "987579" — 6 consecutive digits
