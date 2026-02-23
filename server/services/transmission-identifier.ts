@@ -1,4 +1,5 @@
 import { openai } from "./decision-engine";
+import { sanitizeForLog } from "../utils/sanitizer";
 
 export interface VehicleContext {
   make?: string | null;
@@ -60,7 +61,7 @@ export async function identifyTransmissionByOem(
   context?: VehicleContext
 ): Promise<TransmissionIdentification> {
   try {
-    console.log(`[TransmissionIdentifier] vehicleContext received:`, JSON.stringify(context ?? null));
+    console.log(`[TransmissionIdentifier] vehicleContext received:`, JSON.stringify(sanitizeForLog(context ?? null)));
 
     const lines: string[] = [`OEM code: ${oem}.`];
 

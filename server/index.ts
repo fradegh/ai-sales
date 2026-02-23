@@ -24,6 +24,7 @@ import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
 import { bootstrapPlatformOwner } from "./services/owner-bootstrap";
 import { featureFlagService } from "./services/feature-flags";
+import { sanitizeForLog } from "./utils/sanitizer";
 
 let podzamenuProcess: ChildProcess | null = null;
 let vehicleLookupWorker: Worker | null = null;
@@ -100,7 +101,7 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        logLine += ` :: ${JSON.stringify(sanitizeForLog(capturedJsonResponse))}`;
       }
 
       log(logLine);
@@ -111,6 +112,16 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Intercept oversized request bodies before any route handler can log them
+  if (process.env.NODE_ENV !== 'test') {
+    app.use((req, _res, next) => {
+      if (req.body && JSON.stringify(req.body).length > 1000) {
+        console.log(`[HTTP] ${req.method} ${req.path} body suppressed (too large)`);
+      }
+      next();
+    });
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use(errorHandler);
