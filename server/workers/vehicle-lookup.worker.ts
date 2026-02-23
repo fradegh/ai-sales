@@ -274,6 +274,14 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
     const rawData = partsApi?.rawData as Record<string, string> | null | undefined;
     const modif = (rawData?.modifikaciya || '').toUpperCase();
 
+    // ── DEBUG: raw field values before any parsing ─────────────────────────────
+    console.log('[VehicleLookupWorker] DEBUG modifikaciya raw:', rawData?.modifikaciya);
+    console.log('[VehicleLookupWorker] DEBUG opcii raw:', rawData?.opcii);
+    console.log('[VehicleLookupWorker] DEBUG kpp raw:', rawData?.kpp ?? partsApi?.kpp);
+    console.log('[VehicleLookupWorker] DEBUG partsApi.driveType:', partsApi?.driveType);
+    console.log('[VehicleLookupWorker] DEBUG partsApi.gearboxType:', partsApi?.gearboxType);
+    // ──────────────────────────────────────────────────────────────────────────
+
     const parsedDriveType: string | null = modif.includes('4WD') || modif.includes('AWD')
       ? '4WD'
       : modif.includes('2WD') || modif.includes('FWD')
@@ -293,6 +301,15 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
         `[VehicleLookupWorker] modifikaciya="${modif}" → driveType=${parsedDriveType ?? 'null'}, gearboxType=${parsedGearboxType ?? 'null'}`
       );
     }
+
+    // ── DEBUG: state after modifikaciya block ──────────────────────────────────
+    console.log('[VehicleLookupWorker] DEBUG parsedDriveType after modifikaciya:', parsedDriveType);
+    console.log('[VehicleLookupWorker] DEBUG parsedGearboxType after modifikaciya:', parsedGearboxType);
+    // ── DEBUG: no opcii block exists yet — value that SHOULD set driveType ─────
+    console.log('[VehicleLookupWorker] DEBUG parsedDriveType after opcii:', parsedDriveType);
+    // ── DEBUG: no kpp→gearboxType block exists yet — value that SHOULD set it ──
+    console.log('[VehicleLookupWorker] DEBUG parsedGearboxType after kpp:', parsedGearboxType);
+    // ──────────────────────────────────────────────────────────────────────────
 
     const vehicleContext: VehicleContext = {
       make: partsApi?.make ?? null,
