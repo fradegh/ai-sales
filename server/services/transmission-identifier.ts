@@ -41,48 +41,14 @@ CRITICAL RULES:
 4. The "modifikaciya" field is the most reliable source for transmission type — always prioritize it over general knowledge.
 5. Return JSON only: { modelName, manufacturer, origin, confidence, notes }
 
-Reference table for common Japanese transmissions (use to verify identification):
-
-TOYOTA CVT:
-  1NZ-FE / 2NZ-FE + CVT → K310, K311, K313
-  1ZR-FE / 2ZR-FE + CVT → K317, K318
-  2GR-FE + CVT → K313 (rare)
-
-TOYOTA AT:
-  1NZ-FE / 2NZ-FE + AT → U340E, U341E
-  1ZR-FE + AT → U360E
-  2GR-FE + AT → U660E
-
-NISSAN CVT (JATCO):
-  MR20DE / MR20DD + CVT → JF015E, JF016E
-  QR25DE + CVT → JF011E (RE0F10A)
-  HR15DE + CVT → JF015E
-  VQ35DE + CVT → JF011E
-
-NISSAN AT:
-  MR20DE + AT → RE4F03B
-  QR25DE + AT → RE5R05A
-
-MITSUBISHI:
-  4WD MT → W5MBB (5-speed), W6MBA (6-speed)
-  4WD AT → F4A4A, W4A4B
-  2WD AT → F4A4A
-
-HONDA CVT:
-  L15B + CVT → SLXA, BGRA
-  K20 + CVT → BZKA, MPZA
-
-SUBARU CVT:
-  FB16 / FB20 + CVT → TR580, TR690
-  EJ20 + CVT → TR580
-
-MAZDA AT:
-  PE-VPS + AT → SkyActiv-Drive (FW6A-EL)
-  PY-VPS + AT → FW6A-EL
-
-Use this table as a reference — always cross-check against the specific OEM code
-and vehicle data (make, model, engine code, year) provided in the prompt.
-When uncertain between two candidates, prefer the one that matches the engine code.`;
+When identifying the transmission model — use web search to verify:
+Search for the OEM code and vehicle data to find the exact transmission model name
+used in Russian and Japanese parts listings.
+Example queries: "OEM 310203VX2D Nissan X-Trail коробка передач модель"
+or "Nissan X-Trail NT32 MR20DD CVT модель вариатора"
+Return the market model name (e.g. JF016E, K313, W5MBB) confirmed by actual listings.
+If web search confirms the model — set confidence: "high".
+If web search is inconclusive — set confidence: "medium".`;
 
 const FALLBACK_RESULT: TransmissionIdentification = {
   modelName: null,
@@ -93,8 +59,8 @@ const FALLBACK_RESULT: TransmissionIdentification = {
 };
 
 /**
- * Identifies a transmission model from an OEM/part number using GPT-4.1.
- * No web search needed — the model has knowledge of OEM codes.
+ * Identifies a transmission model from an OEM/part number using GPT-4.1 + web_search.
+ * Searches the web to verify the exact market model name used in Russian/Japanese listings.
  * Optionally accepts vehicle context to improve identification accuracy.
  *
  * Returns all nulls with confidence: 'low' on parse failure.
@@ -126,26 +92,23 @@ export async function identifyTransmissionByOem(
     lines.push(`Identify: modelName, manufacturer, origin, confidence, notes.`);
 
     const userPrompt = lines.join("\n");
-    console.log("[TransmissionIdentifier] Full GPT prompt:\n" + userPrompt);
+    const input = SYSTEM_PROMPT + "\n\n" + userPrompt;
+    console.log("[TransmissionIdentifier] Full GPT prompt:\n" + input);
 
-    const response = await openai.chat.completions.create({
+    const response = await (openai as any).responses.create({
       model: "gpt-4.1",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0,
-      max_tokens: 256,
+      tools: [{ type: "web_search" }],
+      input,
     });
 
-    const raw = response.choices[0]?.message?.content ?? '';
+    const raw: string = response.output_text ?? "";
     const stripped = raw.trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```\s*$/i, '')
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/i, "")
       .trim();
 
-    console.log('[TransmissionIdentifier] GPT response:', raw);
-    console.log('[TransmissionIdentifier] Stripped response:', stripped);
+    console.log("[TransmissionIdentifier] GPT response:", raw);
+    console.log("[TransmissionIdentifier] Stripped response:", stripped);
 
     const parsed = JSON.parse(stripped) as Partial<TransmissionIdentification>;
 
