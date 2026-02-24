@@ -195,17 +195,6 @@ function removeOutliers(prices: number[]): number[] {
 }
 
 function validatePrices(listings: ParsedListing[]): ParsedListing[] {
-  // Drop any listing that has no url or empty url
-  const withUrl = listings.filter(
-    (l) => l.url && l.url.trim().length > 0
-  );
-  if (withUrl.length < listings.length) {
-    console.log(
-      `[PriceSearcher] Dropped ${listings.length - withUrl.length} listings with no URL`
-    );
-  }
-  listings = withUrl;
-
   if (listings.length < 2) return listings;
 
   const prices = listings.map(l => l.price).sort((a, b) => a - b);
