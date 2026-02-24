@@ -11,7 +11,7 @@ import type { GearboxInfo } from "../services/podzamenu-lookup-client";
 import { fillGearboxTemplate } from "../services/gearbox-templates";
 import { detectGearboxType } from "../services/price-sources/types";
 import { storage } from "../storage";
-import type { VehicleContext } from "../services/transmission-identifier";
+import { identifyTransmissionByOem, type VehicleContext } from "../services/transmission-identifier";
 import { getSecret } from "../services/secret-resolver";
 import { decodeVinPartsApiWithRetry, type PartsApiResult } from "../services/partsapi-vin-decoder";
 import { extractVehicleContextFromRawData } from "../services/vehicle-data-extractor";
@@ -436,12 +436,47 @@ async function processVehicleLookup(job: Job<VehicleLookupJobData>): Promise<voi
     // Reject serial numbers (nomer_kpp, e.g. "EDDVA4480773") from the model field
     // before building the customer-facing suggestion. Serial numbers have 4+ consecutive
     // digits and are meaningless to the customer; use the validated market code instead.
-    const gearboxForSuggestion: GearboxInfo = {
+    let gearboxForSuggestion: GearboxInfo = {
       ...gearbox,
       model: isValidTransmissionModel(gearbox.model ?? null)
         ? gearbox.model
         : gearboxModelHint,
     };
+
+    if (gearboxForSuggestion.model) {
+      console.log(
+        `[VehicleLookupWorker] Model from Podzamenu/PartsAPI: ` +
+        `${gearboxForSuggestion.model}, skipping GPT identification`
+      );
+    } else if (gearbox.oem) {
+      try {
+        const identification = await identifyTransmissionByOem(
+          gearbox.oem,
+          vehicleContext
+        );
+        if (
+          identification?.modelName &&
+          (identification.confidence === "high" ||
+            identification.confidence === "medium")
+        ) {
+          gearboxForSuggestion = {
+            ...gearboxForSuggestion,
+            model: identification.modelName,
+          };
+          console.log(
+            `[VehicleLookupWorker] GPT identified model for OEM ` +
+            `${gearbox.oem}: ${identification.modelName} ` +
+            `(confidence: ${identification.confidence})`
+          );
+        }
+      } catch (err) {
+        // Never block suggestion creation
+        console.warn(
+          "[VehicleLookupWorker] GPT identification failed, " +
+          "proceeding without model name:", err
+        );
+      }
+    }
 
     await createResultSuggestionIfNeeded({
       tenantId,
