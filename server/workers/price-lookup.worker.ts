@@ -9,8 +9,22 @@ import { searchUsedTransmissionPrice } from "../services/price-searcher";
 import { renderTemplate, DEFAULT_TEMPLATES } from "../services/template-renderer";
 import type { PriceSnapshot, TenantAgentSettings } from "@shared/schema";
 import { openai } from "../services/decision-engine";
+import { featureFlagService } from "../services/feature-flags";
 
 const QUEUE_NAME = "price_lookup_queue";
+
+// ─── Composite cache key ──────────────────────────────────────────────────────
+
+function buildCacheKey(
+  oem: string,
+  make?: string | null,
+  model?: string | null
+): string {
+  const parts = [oem.toLowerCase().trim()];
+  if (make) parts.push(make.toLowerCase().trim());
+  if (model) parts.push(model.toLowerCase().trim());
+  return parts.join("::");
+}
 
 // ─── Origin translation ───────────────────────────────────────────────────────
 
@@ -457,8 +471,11 @@ async function lookupPricesByOem(
   // Determine correct Russian gearbox term from vehicleContext.gearboxType
   const gearboxLabel = pickGearboxLabel(vehicleContext?.gearboxType);
 
+  // Composite cache key: oem::make::model (lowercase) — prevents cross-vehicle collisions
+  const cacheKey = buildCacheKey(oem, vehicleContext?.make, vehicleContext?.model);
+
   // 1. Check global cache first (any tenant, respects expiresAt)
-  const cached = await storage.getGlobalPriceSnapshot(oem);
+  const cached = await storage.getGlobalPriceSnapshot(cacheKey);
   if (cached) {
     console.log(
       `[PriceLookupWorker] Using global cached snapshot ${cached.id} for OEM "${oem}" (source: ${cached.source})`
@@ -546,6 +563,12 @@ async function lookupPricesByOem(
 
     // AI price estimate fallback when web search returns 0 listings
     if (isNotFound) {
+      const estimateAllowed = await featureFlagService.isEnabled("AI_PRICE_ESTIMATE_ENABLED", tenantId);
+      if (!estimateAllowed) {
+        console.log("[PriceLookupWorker] AI estimate disabled by flag, returning not_found");
+        await createNotFoundSuggestion(tenantId, conversationId, oem);
+        return;
+      }
       const aiEstimate = await estimatePriceFromAI(oem, identification, vehicleContext, gearboxLabel);
       if (aiEstimate) {
         const { priceMin, priceMax } = aiEstimate;
@@ -571,7 +594,7 @@ async function lookupPricesByOem(
           origin: identification.origin,
           expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
           raw: { priceMin, priceMax, identification } as any,
-          searchKey: oem,
+          searchKey: cacheKey,
         });
         console.log(`[PriceLookupWorker] AI estimate snapshot ${aiSnapshot.id} for OEM "${oem}" (${priceMin}–${priceMax} RUB)`);
         await createSuggestionRecord(tenantId, conversationId, suggestedReply, "price", 0.5);
@@ -603,7 +626,7 @@ async function lookupPricesByOem(
       searchQuery: priceData.searchQuery,
       expiresAt,
       raw: { ...priceData, identification } as any,
-      searchKey: oem,
+      searchKey: cacheKey,
     });
 
     console.log(

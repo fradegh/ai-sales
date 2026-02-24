@@ -10,6 +10,7 @@ import {
   telegramSessions,
   messageTemplates, paymentMethods,
   tenantAgentSettings,
+  transmissionIdentityCache,
 } from "@shared/schema";
 import {
   type Tenant, type InsertTenant,
@@ -53,6 +54,7 @@ import {
   type MessageTemplate, type InsertMessageTemplate,
   type PaymentMethod, type InsertPaymentMethod,
   type TenantAgentSettings, type InsertTenantAgentSettings,
+  type TransmissionIdentityCache, type InsertTransmissionIdentityCache,
 } from "@shared/schema";
 import type { IStorage } from "./storage";
 import { encryptSessionString, decryptSessionString } from "./services/telegram-session-crypto";
@@ -1462,9 +1464,32 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async getGlobalPriceSnapshot(oem: string): Promise<PriceSnapshot | null> {
-    const row = await this.getLatestPriceSnapshot(oem, 7);
-    return row ?? null;
+  async getGlobalPriceSnapshot(cacheKey: string): Promise<PriceSnapshot | null> {
+    const now = new Date();
+    const validityFilter = or(
+      sql`(${priceSnapshots.expiresAt} IS NOT NULL AND ${priceSnapshots.expiresAt} > ${now})`,
+      and(
+        sql`${priceSnapshots.expiresAt} IS NULL`,
+        gte(priceSnapshots.createdAt, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
+      )
+    );
+
+    // First: exact match by search_key (new composite key format oem::make::model)
+    const [bySearchKey] = await db.select()
+      .from(priceSnapshots)
+      .where(and(eq(priceSnapshots.searchKey, cacheKey), validityFilter!))
+      .orderBy(desc(priceSnapshots.createdAt))
+      .limit(1);
+    if (bySearchKey) return bySearchKey;
+
+    // Fallback: match by oem column for entries saved before composite keys were introduced
+    const oemPart = cacheKey.split("::")[0].toUpperCase();
+    const [byOem] = await db.select()
+      .from(priceSnapshots)
+      .where(and(eq(priceSnapshots.oem, oemPart), validityFilter!))
+      .orderBy(desc(priceSnapshots.createdAt))
+      .limit(1);
+    return byOem ?? null;
   }
 
   async getLatestPriceSnapshot(oem: string, maxAgeDays = 7): Promise<PriceSnapshot | undefined> {
@@ -1722,5 +1747,97 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return row;
+  }
+
+  // ─── Transmission Identity Cache ─────────────────────────────────────────────
+
+  async getTransmissionIdentity(normalizedOem: string): Promise<TransmissionIdentityCache | undefined> {
+    const [row] = await db
+      .select()
+      .from(transmissionIdentityCache)
+      .where(eq(transmissionIdentityCache.normalizedOem, normalizedOem))
+      .limit(1);
+    return row;
+  }
+
+  async saveTransmissionIdentity(data: InsertTransmissionIdentityCache): Promise<TransmissionIdentityCache> {
+    const [row] = await db
+      .insert(transmissionIdentityCache)
+      .values(data)
+      .onConflictDoUpdate({
+        target: transmissionIdentityCache.normalizedOem,
+        set: {
+          modelName: data.modelName,
+          manufacturer: data.manufacturer,
+          origin: data.origin,
+          confidence: data.confidence,
+          hitCount: sql`${transmissionIdentityCache.hitCount} + 1`,
+          lastSeenAt: sql`CURRENT_TIMESTAMP`,
+        },
+      })
+      .returning();
+    return row;
+  }
+
+  async incrementTransmissionIdentityHit(normalizedOem: string): Promise<void> {
+    await db
+      .update(transmissionIdentityCache)
+      .set({
+        hitCount: sql`${transmissionIdentityCache.hitCount} + 1`,
+        lastSeenAt: sql`CURRENT_TIMESTAMP`,
+      })
+      .where(eq(transmissionIdentityCache.normalizedOem, normalizedOem));
+  }
+
+  // ─── Price snapshot helpers for decision engine context injection ─────────────
+
+  async getLatestVehicleLookupCase(conversationId: string): Promise<VehicleLookupCase | undefined> {
+    const [row] = await db.select()
+      .from(vehicleLookupCases)
+      .where(eq(vehicleLookupCases.conversationId, conversationId))
+      .orderBy(desc(vehicleLookupCases.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  async getLatestPriceSnapshotForConversation(
+    tenantId: string,
+    conversationId: string
+  ): Promise<PriceSnapshot | undefined> {
+    try {
+      // Step 1: get the latest COMPLETED case for this conversation
+      const [completedCase] = await db.select()
+        .from(vehicleLookupCases)
+        .where(and(
+          eq(vehicleLookupCases.conversationId, conversationId),
+          eq(vehicleLookupCases.status, "COMPLETED")
+        ))
+        .orderBy(desc(vehicleLookupCases.createdAt))
+        .limit(1);
+
+      if (!completedCase?.normalizedValue) return undefined;
+
+      const normalizedValue = completedCase.normalizedValue;
+
+      // Step 2: find a price snapshot matching the OEM from the case
+      const [snapshot] = await db.select()
+        .from(priceSnapshots)
+        .where(and(
+          or(
+            eq(priceSnapshots.oem, normalizedValue),
+            sql`${priceSnapshots.searchKey} LIKE ${normalizedValue + "%"}`
+          ),
+          or(
+            eq(priceSnapshots.tenantId, tenantId),
+            sql`${priceSnapshots.tenantId} IS NULL`
+          )
+        ))
+        .orderBy(desc(priceSnapshots.createdAt))
+        .limit(1);
+
+      return snapshot;
+    } catch {
+      return undefined;
+    }
   }
 }

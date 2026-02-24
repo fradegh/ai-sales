@@ -98,24 +98,20 @@ function buildPrimaryQuery(
   const searchTerm = resolveSearchTerm(oem, modelName);
   // Append OEM code only when it differs from searchTerm to avoid duplication
   const oemSuffix = searchTerm !== oem ? ` ${oem}` : '';
-  if (vehicleDesc) {
-    switch (origin) {
-      case "japan":
-        return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у из Японии`;
-      case "europe":
-        return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у из Европы`;
-      default:
-        return `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc}`;
-    }
-  }
   const makePart = make ? `${make} ` : "";
   switch (origin) {
     case "japan":
-      return `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у из Японии`;
+      return vehicleDesc
+        ? `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у из Японии`
+        : `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у из Японии`;
     case "europe":
-      return `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у из Европы`;
+      return vehicleDesc
+        ? `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у из Европы`
+        : `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у из Европы`;
     default:
-      return `${gearboxLabel} ${makePart}${searchTerm}${oemSuffix} контрактная б/у`;
+      return vehicleDesc
+        ? `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} ${vehicleDesc} б/у`
+        : `контрактная ${gearboxLabel} ${searchTerm}${oemSuffix} б/у`;
   }
 }
 
@@ -199,6 +195,17 @@ function removeOutliers(prices: number[]): number[] {
 }
 
 function validatePrices(listings: ParsedListing[]): ParsedListing[] {
+  // Drop any listing that has no url or empty url
+  const withUrl = listings.filter(
+    (l) => l.url && l.url.trim().length > 0
+  );
+  if (withUrl.length < listings.length) {
+    console.log(
+      `[PriceSearcher] Dropped ${listings.length - withUrl.length} listings with no URL`
+    );
+  }
+  listings = withUrl;
+
   if (listings.length < 2) return listings;
 
   const prices = listings.map(l => l.price).sort((a, b) => a - b);
@@ -268,6 +275,37 @@ function parseListingsFromResponse(content: string): ParsedListing[] {
   return listings;
 }
 
+async function fetchLiveFxRates(): Promise<Record<string, number>> {
+  const DEFAULT_RATES: Record<string, number> = {
+    JPY: 0.50,
+    EUR: 95.0,
+    USD: 88.0,
+    KRW: 0.065,
+  };
+  try {
+    // Free API, no key required, returns JSON
+    const res = await fetch(
+      "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/rub.json",
+      { signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) return DEFAULT_RATES;
+    const data = await res.json();
+    // data.rub contains rates FROM rub, we need rates TO rub
+    // So rate_to_rub = 1 / data.rub[currency_lowercase]
+    const rub = data?.rub as Record<string, number> | undefined;
+    if (!rub) return DEFAULT_RATES;
+    return {
+      JPY: rub.jpy ? Math.round((1 / rub.jpy) * 1000) / 1000 : DEFAULT_RATES.JPY,
+      EUR: rub.eur ? Math.round((1 / rub.eur) * 100) / 100 : DEFAULT_RATES.EUR,
+      USD: rub.usd ? Math.round((1 / rub.usd) * 100) / 100 : DEFAULT_RATES.USD,
+      KRW: rub.krw ? Math.round((1 / rub.krw) * 10000) / 10000 : DEFAULT_RATES.KRW,
+    };
+  } catch {
+    console.warn("[PriceSearcher] FX fetch failed, using default rates");
+    return DEFAULT_RATES;
+  }
+}
+
 /**
  * Searches for used/contract transmission prices via OpenAI Responses API
  * (gpt-4.1 with web_search tool).
@@ -280,6 +318,9 @@ export async function searchUsedTransmissionPrice(
   make?: string | null,
   vehicleContext?: VehicleContext | null
 ): Promise<PriceSearchResult> {
+  const fxRates = await fetchLiveFxRates();
+  console.log("[PriceSearcher] FX rates:", fxRates);
+
   const vehicleDesc =
     vehicleContext?.make && vehicleContext?.model
       ? `${vehicleContext.make} ${vehicleContext.model}`
@@ -344,15 +385,15 @@ export async function searchUsedTransmissionPrice(
   };
 
   // International fallback — searches Yahoo Auctions Japan, eBay, JDM/EU parts sites
-  // and converts prices to RUB using fixed Feb-2026 exchange rates
+  // and converts prices to RUB using live FX rates fetched at session start
   const runInternationalSearch = async (): Promise<ParsedListing[]> => {
     const searchDesc = modelName ?? oem;
     const input =
       `Search international websites for prices of this used transmission: ${searchDesc} OEM ${oem}.\n` +
       `Look on: Yahoo Auctions Japan (ヤフオク), eBay, JDM parts sites, ` +
       `European parts dealers, any non-Russian auto parts website.\n` +
-      `For each price found, convert to Russian Rubles using these exchange rates (February 2026):\n` +
-      `1 JPY = 0.50 RUB\n1 USD = 76.8 RUB\n1 EUR = 90.4 RUB\n1 GBP = 103 RUB\n` +
+      `For each price found, convert to Russian Rubles using these exchange rates:\n` +
+      `1 JPY = ${fxRates.JPY} RUB\n1 USD = ${fxRates.USD} RUB\n1 EUR = ${fxRates.EUR} RUB\n1 KRW = ${fxRates.KRW} RUB\n` +
       `Return a JSON array: {"price": <converted RUB integer>, "source": "<site>", "title": "<description (original price in original currency)>"}.\n` +
       `If price range found, return two entries (min and max).\n` +
       `Return ONLY a valid JSON array. If nothing found, return [].`;

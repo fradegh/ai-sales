@@ -37,5 +37,9 @@
   },
   "global:AUTO_PARTS_ENABLED": {
     "enabled": true
+  },
+  "global:AI_PRICE_ESTIMATE_ENABLED": {
+    "enabled": false,
+    "description": "Allow GPT to estimate prices when no real listings found. Disabled by default to prevent hallucinations."
   }
 }

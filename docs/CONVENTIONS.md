@@ -1491,7 +1491,7 @@ Flags are stored in `feature_flags.json` (defaults, keyed as `global:<FLAG_NAME>
 | `TELEGRAM_CHANNEL_ENABLED` | `false` | Bot API (inactive) |
 | `WHATSAPP_CHANNEL_ENABLED` | `false` | Business API (inactive) |
 | `MAX_CHANNEL_ENABLED` | `false` | Bot API (inactive) |
-| `AUTO_PARTS_ENABLED` | *(absent = false)* | VIN/FRAME auto-detection in messages |
+| `AUTO_PARTS_ENABLED` | `true` | VIN/FRAME auto-detection in messages |
 
 ---
 

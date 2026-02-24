@@ -749,7 +749,7 @@ Generate an AI reply suggestion for the latest customer message.
 {
   "suggestionId": "uuid",
   "replyText": "string",
-  "intent": "price | availability | shipping | return | discount | complaint | other | photo_request | price_objection | ready_to_buy | needs_manual_quote | invalid_vin | marking_provided | payment_blocked | warranty_question | want_visit | what_included | vehicle_id_request | gearbox_tag_request | gearbox_tag_retry | null",
+  "intent": "price | availability | shipping | return | discount | complaint | other | photo_request | price_objection | ready_to_buy | needs_manual_quote | invalid_vin | marking_provided | payment_blocked | warranty_question | want_visit | what_included | mileage_preference | vehicle_id_request | gearbox_tag_request | gearbox_tag_retry | null",
   "confidence": {
     "total": 0.85,
     "similarity": 0.90,
@@ -1226,6 +1226,30 @@ Get price history snapshots for a conversation.
 - **Auth:** `requireAuth`, `requirePermission("MANAGE_CONVERSATIONS")`
 - **Response 200:** `{ "snapshots": [...], "oem": "string | null" }`
 
+#### VIN-OCR Image Analysis Pipeline
+
+When an inbound message contains image attachments, `processIncomingMessageFull()` calls `analyzeImages()` from `server/services/vin-ocr.service.ts` using **GPT-4o vision** before any text-based detection:
+
+1. **Image classification** (`analyzeImage()`) — GPT-4o classifies each attachment as one of three types:
+   - `gearbox_tag` — a transmission label/шильдик. Extracts the OEM code (e.g. `W5MBB`, `F4A42`). Code is passed directly to `enqueuePriceLookup`.
+   - `registration_doc` — Russian vehicle registration certificate. Extracts `vin`, `frame`, `make`, `model`. VIN or FRAME is passed to the vehicle lookup pipeline.
+   - `unknown` — unrecognised image; falls through to text detection.
+
+2. **VIN checksum validation** — after extracting a VIN, `isValidVinChecksum()` is called. On failure, two correction strategies run in sequence:
+   - **Strategy 1** (`tryAutoCorrectVin()`) — single-character substitution over visually similar pairs (`S↔5`, `B↔8`, `Z↔2`, `G↔6`, `I↔1`, `O↔0`).
+   - **Strategy 2** (`retryVinReadWithGpt()`) — sends the image a second time with a targeted GPT-4o prompt listing the misread character, asking GPT to re-read character-by-character. Strategy 1 is also applied to GPT's new attempt.
+
+3. **Model**: `gpt-4o` (vision). No `web_search` tool. Returns JSON directly in message content.
+
+**Key file:** `server/services/vin-ocr.service.ts`
+
+**Exported functions:**
+- `analyzeImages(attachments)` → `ImageAnalysisResult` — preferred entry point; iterates attachments and returns the first non-unknown result with VIN validation applied.
+- `analyzeImage(attachment)` → `ImageAnalysisResult` — single-image analysis without VIN correction.
+- `extractVinFromImages(attachments)` → `string | null` — legacy VIN-only extractor; applies the same two-strategy correction pipeline.
+
+---
+
 #### Vehicle Lookup Worker Pipeline
 
 The `POST /api/conversations/:id/vehicle-lookup-case` endpoint enqueues a BullMQ job processed by `server/workers/vehicle-lookup.worker.ts`. The worker follows this pipeline:
@@ -1234,7 +1258,7 @@ The `POST /api/conversations/:id/vehicle-lookup-case` endpoint enqueues a BullMQ
    - **Podzamenu** (`lookupByVehicleId`) — returns OEM code, gearbox model, factory code, OEM candidates, and `vehicleMeta` (make/model/year). Timeout 60 s, 3 retries.
    - **PartsAPI** (`decodeVinPartsApiWithRetry`) — VIN **and FRAME** numbers are both supported (FRAME guard removed). Returns make, model, year, engine, kpp, driveType, gearboxType, displacement. Timeout 15 s, 3 retries. Failure is non-fatal (returns `null`, pipeline continues).
 2. **vehicleContext assembly** — PartsAPI fields are preferred; Podzamenu `vehicleMeta` (make/model/year) is used as fallback when PartsAPI returns no data. Critical for FRAME lookups.
-3. **gearboxType parsing** — extracted from PartsAPI `rawData.modifikaciya` field (e.g. `"5FM/T"` → `MT`, `"CVT"` → `CVT`).
+3. **gearboxType parsing** — extracted from PartsAPI `rawData.modifikaciya` field (e.g. `"5FM/T"` → `MT`, `"CVT"` → `CVT`). When regex parsing produces no result, `extractVehicleContextFromRawData()` (`server/services/vehicle-data-extractor.ts`) is called as a GPT-4o-mini fallback — it scans ALL raw PartsAPI fields and returns `{ driveType, gearboxType }`.
 4. **Price lookup routing** — high-confidence OEM → `enqueuePriceLookup`; MODEL_ONLY → fallback search; no OEM → `tryFallbackPriceLookup`.
 
 #### Price Lookup Worker Pipeline

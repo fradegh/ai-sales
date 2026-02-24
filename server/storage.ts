@@ -40,6 +40,7 @@ import {
   type MessageTemplate, type InsertMessageTemplate,
   type PaymentMethod, type InsertPaymentMethod,
   type TenantAgentSettings, type InsertTenantAgentSettings,
+  type TransmissionIdentityCache, type InsertTransmissionIdentityCache,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -295,6 +296,15 @@ export interface IStorage {
   // Tenant Agent Settings
   getTenantAgentSettings(tenantId: string): Promise<TenantAgentSettings | null>;
   upsertTenantAgentSettings(tenantId: string, data: Partial<InsertTenantAgentSettings>): Promise<TenantAgentSettings>;
+
+  // Transmission Identity Cache
+  getTransmissionIdentity(normalizedOem: string): Promise<TransmissionIdentityCache | undefined>;
+  saveTransmissionIdentity(data: InsertTransmissionIdentityCache): Promise<TransmissionIdentityCache>;
+  incrementTransmissionIdentityHit(normalizedOem: string): Promise<void>;
+
+  // Price snapshot helpers for decision engine context injection
+  getLatestVehicleLookupCase(conversationId: string): Promise<VehicleLookupCase | undefined>;
+  getLatestPriceSnapshotForConversation(tenantId: string, conversationId: string): Promise<PriceSnapshot | undefined>;
 }
 
 import { DatabaseStorage } from "./database-storage";

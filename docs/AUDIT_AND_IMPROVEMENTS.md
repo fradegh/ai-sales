@@ -2,7 +2,7 @@
 
 **Auditor:** Senior Tech Lead (automated deep audit)
 **Initial Audit:** 2026-02-20
-**Last Updated:** 2026-02-23
+**Last Updated:** 2026-02-24
 **Scope:** Full codebase — server, client, shared, Python services, config, migrations, docs
 **Codebase:** AI Sales Operator — B2B SaaS for AI-powered customer support automation
 
@@ -21,7 +21,8 @@
 | Architecture | 6 | 5 | 0 | 1 |
 | Security | ~10 | 6 | 2 | 2 |
 | Performance | ~10 | 7 | 1 | 2 |
-| New Findings (2026-02-22) | 8 | 0 | 2 | 6 |
+| New Findings (2026-02-22) | 8 | 2 | 2 | 4 |
+| New Findings (2026-02-24) | 2 | 0 | 0 | 2 |
 
 ---
 
@@ -618,13 +619,11 @@ The following significant features exist in code but are not documented in any f
 
 ## Section 9: New Findings (2026-02-22 Audit)
 
-### NEW-01: `AUTO_PARTS_ENABLED` feature flag undocumented
+### ~~NEW-01: `AUTO_PARTS_ENABLED` feature flag undocumented~~ — FIXED
 
-- **File:** `server/services/inbound-message-handler.ts`
-- **Problem:** The flag `AUTO_PARTS_ENABLED` is checked in `processIncomingMessageFull()` to gate the entire VIN/FRAME detection + vehicle lookup pipeline. However, it is NOT listed in `feature_flags.json` (which has only 12 flags). When the flag is absent, `featureFlagService.isEnabled()` returns `false`, so the pipeline is silently disabled by default.
-- **Impact:** Teams enabling vehicle lookup need to explicitly add this flag to `feature_flags.json` or toggle it in the DB via the admin panel.
-- **Recommendation:** Add `AUTO_PARTS_ENABLED: false` to `feature_flags.json` with documentation. Or check if this is intentionally controlled only via DB admin panel.
-- **Priority:** Medium
+- **File:** `server/services/inbound-message-handler.ts`, `feature_flags.json`
+- **Problem:** The flag `AUTO_PARTS_ENABLED` was not listed in `feature_flags.json`.
+- **Status:** ✅ FIXED — `AUTO_PARTS_ENABLED: true` is now present in `feature_flags.json` as the 13th entry. Default is `true`, meaning the VIN/FRAME auto-detection pipeline is active by default for all tenants. Updated in `docs/CONVENTIONS.md` feature flags table.
 
 ### NEW-02: `auth-service.ts` — password reset does not invalidate sessions
 
@@ -702,7 +701,7 @@ The following significant features exist in code but are not documented in any f
 
 | ID | Description | Priority |
 |----|-------------|----------|
-| NEW-01 | `AUTO_PARTS_ENABLED` flag not in `feature_flags.json` | Medium |
+| ~~NEW-01~~ | ~~`AUTO_PARTS_ENABLED` flag not in `feature_flags.json`~~ | ✅ Fixed |
 | NEW-02 | Password reset doesn't invalidate existing sessions | High |
 | NEW-06 | Dockerfile doesn't exist but is referenced in docs | Low |
 | NEW-08 | `settings.tsx` now 4,151 lines (DEBT-11 got worse) | Medium |
@@ -758,5 +757,37 @@ The following significant features exist in code but are not documented in any f
 
 ---
 
-*End of audit. Initial audit: 2026-02-20. Updated: 2026-02-23.*
+---
+
+## Section 13: New Findings (2026-02-24 Audit)
+
+### NEW-09: `vin-ocr.service.ts` — undocumented GPT-4o vision image analysis service
+
+- **File:** `server/services/vin-ocr.service.ts`
+- **Discovery:** A fully implemented image analysis service using `gpt-4o` (vision) was not documented anywhere. It is actively called from `inbound-message-handler.ts` on every message with image attachments.
+- **What it does:**
+  - `analyzeImages(attachments)` — iterates attachments, calls GPT-4o vision to classify each as `gearbox_tag`, `registration_doc`, or `unknown`
+  - For `gearbox_tag`: extracts transmission OEM code (e.g. `W5MBB`) → passed directly to `enqueuePriceLookup`
+  - For `registration_doc`: extracts VIN, frame number, make, model → routed to vehicle lookup pipeline
+  - Two-step VIN checksum correction: (1) single-char substitution for visually similar pairs (`S↔5`, `B↔8`, `Z↔2`, `G↔6`, `I↔1`, `O↔0`); (2) GPT-4o retry with targeted confusion-pairs prompt
+  - `extractVinFromImages(attachments)` — legacy VIN-only extractor, same correction pipeline
+- **Impact:** This is a critical component of the inbound image pipeline. Without it, image-based VIN/OEM extraction is impossible.
+- **Action taken:** ✅ Fully documented in `docs/API_REFERENCE.md` under **VIN-OCR Image Analysis Pipeline**.
+- **Priority:** Documentation only — code was already working.
+
+### NEW-10: `vehicle-data-extractor.ts` — undocumented GPT-4o-mini driveType/gearboxType fallback
+
+- **File:** `server/services/vehicle-data-extractor.ts`
+- **Discovery:** A GPT-4o-mini fallback extractor for `driveType` and `gearboxType` from PartsAPI `rawData` was not documented. It is called from `vehicle-lookup.worker.ts` when regex-based parsing of `modifikaciya`/`opcii`/`kpp` fields produces no values.
+- **What it does:**
+  - `extractVehicleContextFromRawData(rawData)` — sends raw PartsAPI JSON to gpt-4o-mini with a system prompt that scans ALL fields (`modifikaciya`, `opcii`, `privod`, `kpp`, `tip_kpp`, `opisanie`, `naimenovanie`, `modely`) for drive type and gearbox type indicators
+  - Returns `{ driveType: "4WD"|"2WD"|null, gearboxType: "CVT"|"MT"|"AT"|null }`
+  - ~50 tokens per call. Non-fatal — on failure, returns `{ driveType: null, gearboxType: null }`
+- **Impact:** Improves `gearboxType` detection accuracy for non-standard PartsAPI responses, which flows into transmission identification and search query construction.
+- **Action taken:** ✅ Referenced in `docs/API_REFERENCE.md` in the Vehicle Lookup Worker Pipeline gearboxType parsing step.
+- **Priority:** Documentation only — code was already working.
+
+---
+
+*End of audit. Initial audit: 2026-02-20. Updated: 2026-02-24.*
 *All 9 critical issues from initial audit have been fixed.*

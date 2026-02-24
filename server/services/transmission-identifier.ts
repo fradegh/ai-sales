@@ -1,5 +1,6 @@
 import { openai } from "./decision-engine";
 import { sanitizeForLog } from "../utils/sanitizer";
+import { storage } from "../storage";
 
 export interface VehicleContext {
   make?: string | null;
@@ -102,6 +103,26 @@ export async function identifyTransmissionByOem(
   try {
     console.log(`[TransmissionIdentifier] vehicleContext received:`, JSON.stringify(sanitizeForLog(context ?? null)));
 
+    // 1. Normalize OEM (uppercase, trim)
+    const normalizedOem = oem.trim().toUpperCase();
+
+    // 2. Check local cache first
+    const cached = await storage.getTransmissionIdentity(normalizedOem);
+    if (cached && cached.modelName) {
+      console.log(
+        `[TransmissionIdentifier] Cache hit for ${normalizedOem}: ${cached.modelName}`
+      );
+      await storage.incrementTransmissionIdentityHit(normalizedOem);
+      return {
+        modelName: cached.modelName,
+        manufacturer: cached.manufacturer ?? null,
+        origin: (cached.origin as TransmissionIdentification["origin"]) ?? "unknown",
+        confidence: (cached.confidence as TransmissionIdentification["confidence"]) ?? "high",
+        notes: "Returned from local identity cache",
+      };
+    }
+
+    // 3. GPT call
     const lines: string[] = [`OEM code: ${oem}.`];
 
     if (context?.partsApiRawData) {
@@ -115,6 +136,21 @@ export async function identifyTransmissionByOem(
       if (context?.engine) lines.push(`Engine code: ${context.engine}`);
       if (context?.driveType) lines.push(`Drive type: ${context.driveType}`);
       if (context?.gearboxModelHint) lines.push(`Gearbox model hint: ${context.gearboxModelHint}`);
+    }
+
+    // Always append these signals regardless of rawData presence —
+    // explicit structured fields prevent GPT from misreading the blob
+    if (context?.factoryCode) {
+      lines.push(`Factory code (from Podzamenu gearbox record): ${context.factoryCode}`);
+    }
+    if (context?.gearboxType) {
+      lines.push(`Transmission type (pre-parsed, use this to avoid MT/CVT/AT confusion): ${context.gearboxType}`);
+    }
+    if (context?.displacement) {
+      lines.push(`Engine displacement (critical for variant disambiguation): ${context.displacement}`);
+    }
+    if (context?.body) {
+      lines.push(`Body type: ${context.body}`);
     }
 
     lines.push(`\nBased on the above vehicle data and OEM code, identify the transmission.`);
@@ -143,7 +179,7 @@ export async function identifyTransmissionByOem(
     const validOrigins = ["japan", "europe", "korea", "usa", "unknown"] as const;
     const validConfidences = ["high", "medium", "low"] as const;
 
-    return {
+    const result: TransmissionIdentification = {
       modelName: typeof parsed.modelName === "string" ? parsed.modelName : null,
       manufacturer: typeof parsed.manufacturer === "string" ? parsed.manufacturer : null,
       origin: validOrigins.includes(parsed.origin as any)
@@ -154,6 +190,30 @@ export async function identifyTransmissionByOem(
         : "low",
       notes: typeof parsed.notes === "string" ? parsed.notes : "",
     };
+
+    if (
+      result.modelName &&
+      (result.confidence === "high" || result.confidence === "medium")
+    ) {
+      try {
+        await storage.saveTransmissionIdentity({
+          oem: oem.trim(),
+          normalizedOem,
+          modelName: result.modelName,
+          manufacturer: result.manufacturer ?? null,
+          origin: result.origin,
+          confidence: result.confidence,
+        });
+        console.log(
+          `[TransmissionIdentifier] Saved to cache: ${normalizedOem} → ${result.modelName}`
+        );
+      } catch (err) {
+        // Cache save failure must never break the main flow
+        console.warn("[TransmissionIdentifier] Cache save failed:", err);
+      }
+    }
+
+    return result;
   } catch (err: any) {
     console.warn(`[TransmissionIdentifier] Failed to identify OEM "${oem}": ${err.message}`);
     return FALLBACK_RESULT;

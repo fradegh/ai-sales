@@ -1561,3 +1561,46 @@ export const insertMaxPersonalAccountSchema = createInsertSchema(maxPersonalAcco
   createdAt: true,
   updatedAt: true,
 });
+
+// ============================================
+// TRANSMISSION IDENTITY CACHE
+// ============================================
+// Local OEM → transmission model mapping cache.
+// Prevents repeated GPT calls for known OEM codes and eliminates
+// hallucinations by serving confirmed identifications from DB.
+
+export const transmissionIdentityCache = pgTable(
+  "transmission_identity_cache",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    oem: text("oem").notNull(),
+    normalizedOem: text("normalized_oem").notNull(),
+    modelName: text("model_name"),
+    manufacturer: text("manufacturer"),
+    origin: text("origin"),
+    confidence: text("confidence").notNull().default("high"),
+    hitCount: integer("hit_count").notNull().default(1),
+    lastSeenAt: timestamp("last_seen_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    createdAt: timestamp("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("transmission_identity_cache_normalized_oem_unique").on(table.normalizedOem),
+    index("transmission_identity_cache_oem_idx").on(table.oem),
+  ]
+);
+
+export type TransmissionIdentityCache = typeof transmissionIdentityCache.$inferSelect;
+export type InsertTransmissionIdentityCache = typeof transmissionIdentityCache.$inferInsert;
+
+export const insertTransmissionIdentityCacheSchema = createInsertSchema(transmissionIdentityCache).omit({
+  id: true,
+  hitCount: true,
+  lastSeenAt: true,
+  createdAt: true,
+});
