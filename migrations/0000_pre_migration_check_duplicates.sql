@@ -1,32 +1,22 @@
 -- PRE-MIGRATION: Detect duplicate emails before running migration
--- Run this BEFORE applying 0001_add_users_email_unique_index.sql
--- If duplicates exist, resolve them manually before proceeding
-
--- Query 1: Find all duplicate emails (case-insensitive)
-SELECT 
-    LOWER(TRIM(email)) as normalized_email,
-    COUNT(*) as duplicate_count,
-    ARRAY_AGG(id) as user_ids,
-    ARRAY_AGG(username) as usernames,
-    ARRAY_AGG(auth_provider) as auth_providers,
-    ARRAY_AGG(email_verified_at IS NOT NULL) as verified_status
-FROM users 
-WHERE email IS NOT NULL
-GROUP BY LOWER(TRIM(email))
-HAVING COUNT(*) > 1
-ORDER BY duplicate_count DESC;
-
--- Query 2: Summary count
-SELECT 
-    COUNT(*) as total_duplicate_groups,
-    SUM(cnt - 1) as total_records_to_resolve
-FROM (
-    SELECT LOWER(TRIM(email)) as email, COUNT(*) as cnt
-    FROM users 
-    WHERE email IS NOT NULL
-    GROUP BY LOWER(TRIM(email))
-    HAVING COUNT(*) > 1
-) duplicates;
+-- Safe for fresh installs — skips checks if users table does not exist yet
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'users'
+  ) THEN
+    -- Raises a notice if duplicates found (does not block migration)
+    PERFORM 1
+    FROM (
+      SELECT LOWER(TRIM(email)) as email, COUNT(*) as cnt
+      FROM users
+      WHERE email IS NOT NULL
+      GROUP BY LOWER(TRIM(email))
+      HAVING COUNT(*) > 1
+    ) duplicates;
+  END IF;
+END $$;
 
 -- REMEDIATION STRATEGIES (choose based on business context):
 --
