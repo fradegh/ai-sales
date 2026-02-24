@@ -6,6 +6,8 @@ export interface ListingItem {
   url: string;
   location?: string;
   postedAt?: string;
+  city?: string | null;
+  sourceUrl?: string;
 }
 
 export interface PriceResult {

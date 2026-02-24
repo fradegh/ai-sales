@@ -54,6 +54,7 @@
   - [payment_methods](#payment_methods)
   - [tenant_agent_settings](#tenant_agent_settings)
   - [max_personal_accounts](#max_personal_accounts)
+  - [transmission_identity_cache](#transmission_identity_cache)
 - [Relationships](#relationships)
 - [Indexes](#indexes)
 - [Migrations History](#migrations-history)
@@ -67,13 +68,13 @@
 |----------|-------|
 | Database | PostgreSQL |
 | ORM | Drizzle ORM (`drizzle-orm` + `node-postgres`) |
-| Schema file | `shared/schema.ts` (~1564 lines) |
+| Schema file | `shared/schema.ts` (~1600 lines) |
 | Additional models | `shared/models/auth.ts`, `shared/models/chat.ts` (legacy) |
 | Migrations directory | `./migrations` |
 | Config file | `drizzle.config.ts` |
 | Connection | `DATABASE_URL` environment variable |
 | Primary key strategy | UUID (`gen_random_uuid()`) for all tables |
-| Total tables | **48** (defined in `shared/schema.ts`) |
+| Total tables | **49** (defined in `shared/schema.ts`) |
 
 ---
 
@@ -446,6 +447,7 @@ AI-generated reply suggestions.
 | autosend_block_reason | text | YES | — | — | `FLAG_OFF`, `SETTING_OFF`, `INTENT_NOT_ALLOWED` |
 | self_check_need_handoff | boolean | YES | `false` | — | Self-check flagged for handoff |
 | self_check_reasons | jsonb | YES | `'[]'` | — | Self-check handoff reasons |
+| escalation_data | jsonb | YES | — | — | Structured operator escalation payload: `{type, reason, searchContext, operatorHints}` (added via 0019) |
 | created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Creation timestamp |
 
 ---
@@ -1002,7 +1004,7 @@ Global price cache per OEM. Entries with `tenant_id = NULL` are shared across al
 | id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Snapshot UUID |
 | tenant_id | varchar | **YES** | — | FK → tenants.id | Owning tenant; `NULL` = global cache entry |
 | oem | text | NO | — | — | OEM part number |
-| source | text | NO | — | — | `internal`, `avito`, `drom`, `web`, `openai_web_search`, `not_found`, `mock` |
+| source | text | NO | — | — | `internal`, `avito`, `drom`, `web`, `openai_web_search`, `not_found`, `mock`, `ai_estimate`; planned: `yandex`, `escalation` |
 | currency | text | NO | `'RUB'` | — | Currency |
 | min_price | integer | YES | — | — | Minimum found price |
 | max_price | integer | YES | — | — | Maximum found price |
@@ -1013,17 +1015,20 @@ Global price cache per OEM. Entries with `tenant_id = NULL` are shared across al
 | sale_price | integer | YES | — | — | Calculated sale price (fallback mode) |
 | margin_pct | integer | YES | `0` | — | Applied margin percentage |
 | price_note | text | YES | — | — | Price display note |
-| search_key | text | YES | — | — | Search key (normalized OEM) |
+| search_key | text | YES | — | — | Search key (composite: `oem::make::model` lowercase) |
 | model_name | text | YES | — | — | Transmission model name, e.g. "JATCO JF011E" |
 | manufacturer | text | YES | — | — | Manufacturer name, e.g. "JATCO", "Aisin", "ZF" |
 | origin | text | YES | — | — | Production origin: `japan`, `europe`, `korea`, `usa`, `unknown` |
 | mileage_min | integer | YES | — | — | Lowest mileage found across listings (km) |
 | mileage_max | integer | YES | — | — | Highest mileage found across listings (km) |
 | listings_count | integer | YES | `0` | — | Number of valid listings found |
-| search_query | text | YES | — | — | Query string used for OpenAI web search |
-| expires_at | timestamp | YES | — | — | Cache expiry: `created_at + 7 days` (or 24h for `not_found`) |
-| raw | jsonb | YES | `'{}'` | — | Raw response data + identification result |
+| search_query | text | YES | — | — | Query string used for price search |
+| expires_at | timestamp | YES | — | — | Cache expiry: 7d (found) / 24h (not_found) / 2h (ai_estimate) |
+| raw | jsonb | YES | `'{}'` | — | Raw response data + identification result; `raw.listings[]` holds per-listing data |
 | created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Snapshot timestamp |
+| stage | text | YES | — | — | Pipeline stage that produced this snapshot: `'yandex'`, `'openai_web_search'`, `'not_found'` (added via 0017) |
+| urls | text[] | YES | — | — | URLs opened via Playwright in Stage 1 (added via 0017) |
+| domains | text[] | YES | — | — | Unique domains found across listings (added via 0017) |
 
 **Indexes:**
 - `price_snapshots_tenant_oem_created_idx` on `(tenant_id, oem, created_at DESC)`
@@ -1032,7 +1037,7 @@ Global price cache per OEM. Entries with `tenant_id = NULL` are shared across al
 - `idx_price_snapshots_oem_expires` on `(oem, expires_at DESC)` — fast global cache lookup
 
 **Cache logic:**
-- OEM lookup → `getGlobalPriceSnapshot(oem)` checks `expires_at > now` globally (no tenant filter)
+- OEM lookup → `getGlobalPriceSnapshot(cacheKey)` checks `expires_at > now` globally (no tenant filter); `cacheKey = oem::make::model`
 - Fallback mode → `getPriceSnapshotsByOem(tenantId, searchKey)` (tenant-scoped, existing behavior)
 - Mock results are **never** saved to this table
 
@@ -1163,6 +1168,42 @@ Each account corresponds to one GREEN-API instance (phone number registered on t
 - `max_personal_accounts_tenant_idx` on `tenant_id`
 
 **Note:** Early migration (0014) created this table with a single-account-per-tenant constraint. Migration 0015 dropped that constraint to allow multiple accounts per tenant, matching the Telegram Personal model.
+
+---
+
+### transmission_identity_cache
+
+OEM-to-model-name cache populated by `identifyTransmissionByOem()` (GPT-4o-mini). Prevents repeated
+GPT calls for the same OEM code across conversations and tenants. Keyed by normalised OEM string.
+
+Added in migration `0016_transmission_identity_cache.sql`. TTL column added in `0018`.
+
+| Column | Type | Nullable | Default | Constraints | Description |
+|--------|------|----------|---------|-------------|-------------|
+| id | varchar | NO | `gen_random_uuid()` | PRIMARY KEY | Cache entry UUID |
+| oem | text | NO | — | — | Original OEM code as submitted |
+| normalized_oem | text | NO | — | UNIQUE | Lowercased, trimmed OEM code (lookup key) |
+| model_name | text | YES | — | — | Market/commercial transmission model name (e.g. "JF011E", "U660E") |
+| manufacturer | text | YES | — | — | Manufacturer name (e.g. "JATCO", "Aisin", "ZF") |
+| origin | text | YES | — | — | `japan`, `europe`, `korea`, `usa`, `unknown` |
+| confidence | text | NO | `'high'` | — | `high`, `medium`, `low` — GPT confidence |
+| hit_count | integer | NO | `1` | — | Number of times this entry was retrieved |
+| last_seen_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Last cache hit timestamp |
+| created_at | timestamp | NO | `CURRENT_TIMESTAMP` | — | Initial population timestamp |
+| expires_at | timestamp | YES | — | — | Cache expiry — `created_at + 30 days`; backfilled for existing rows via migration 0018 |
+
+**Indexes:**
+- `transmission_identity_cache_normalized_oem_unique` — UNIQUE on `normalized_oem`
+- `transmission_identity_cache_oem_idx` on `oem`
+
+**Storage methods:**
+```typescript
+getTransmissionIdentity(normalizedOem: string): Promise<TransmissionIdentityCache | undefined>
+saveTransmissionIdentity(data: InsertTransmissionIdentityCache): Promise<TransmissionIdentityCache>
+incrementTransmissionIdentityHit(normalizedOem: string): Promise<void>
+```
+
+**Cache behaviour:** On OEM lookup in `price-lookup.worker.ts`, if `normalizedOem` hit found and `expires_at` is in the future (or NULL), `hit_count` is incremented and cached identity is returned — no GPT call.
 
 ---
 
@@ -1299,6 +1340,10 @@ vehicle_lookup_cache
 | 13 | `0013_feature_flags_composite_unique.sql` | Fixes feature_flags uniqueness to support per-tenant overrides. Drops old column-level unique. Creates two partial unique indexes: `feature_flags_global_unique` (name WHERE tenant_id IS NULL) and `feature_flags_tenant_unique` (name, tenant_id WHERE tenant_id IS NOT NULL). |
 | 14 | `0014_max_personal_accounts.sql` | Creates `max_personal_accounts` table for MAX Personal (GREEN-API) integration. Initial version: single account per tenant. |
 | 15 | `0015_max_personal_multiaccount.sql` | Drops single-account-per-tenant constraint. Adds `account_id` column (stable public identifier) and `label` column. Creates new unique constraint on `(tenant_id, id_instance)` to allow multiple accounts per tenant. |
+| 16 | `0016_transmission_identity_cache.sql` | Creates `transmission_identity_cache` table with UNIQUE index on `normalized_oem` and regular index on `oem`. Caches GPT-4o-mini OEM identification results. |
+| 17 | `0017_price_snapshots_stage.sql` | Adds `stage TEXT`, `urls TEXT[]`, `domains TEXT[]` to `price_snapshots` for the Yandex+Playwright price pipeline. |
+| 18 | `0018_transmission_identity_cache_ttl.sql` | Adds `expires_at TIMESTAMP` to `transmission_identity_cache`. Backfills `expires_at = created_at + interval '30 days'` for all existing rows. |
+| 19 | `0019_ai_suggestions_escalation.sql` | Adds `escalation_data JSONB` to `ai_suggestions` for structured operator escalation payload (manual price search context, ready queries, suggested sites). |
 
 ---
 
@@ -1306,7 +1351,7 @@ vehicle_lookup_cache
 
 | Item | Path |
 |------|------|
-| **Main schema** | `shared/schema.ts` — defines all 40+ tables, insert schemas, types, enums, and constants |
+| **Main schema** | `shared/schema.ts` — defines all 49 tables, insert schemas, types, enums, and constants |
 | **Auth models** | `shared/models/auth.ts` — `sessions` and `auth_users` tables (express-session store and OIDC profiles) |
 | **Chat models** | `shared/models/chat.ts` — legacy chat schema (serial IDs, simplified conversations/messages) |
 | **Drizzle config** | `drizzle.config.ts` — `dialect: "postgresql"`, `schema: "./shared/schema.ts"`, `out: "./migrations"` |

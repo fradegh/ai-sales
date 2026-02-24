@@ -127,6 +127,27 @@
       "when": 1740500000000,
       "tag": "0016_transmission_identity_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1740600000000,
+      "tag": "0017_price_snapshots_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1740600060000,
+      "tag": "0018_transmission_identity_cache_ttl",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1740600120000,
+      "tag": "0019_ai_suggestions_escalation",
+      "breakpoints": true
     }
   ]
 }

@@ -53,6 +53,22 @@ const DEFAULT_FLAGS: Record<FeatureFlagName, { description: string; enabled: boo
     description: "Enable auto parts dealer functionality (VIN lookup, gearbox ID, price search, Agent tab, price templates)",
     enabled: false,
   },
+  MAX_PERSONAL_CHANNEL_ENABLED: {
+    description: "Enable Max (VK Teams) Personal channel",
+    enabled: false,
+  },
+  AI_PRICE_ESTIMATE_ENABLED: {
+    description: "Enable AI-based price estimate fallback when web search returns no results",
+    enabled: true,
+  },
+  PRICE_ESCALATION_ENABLED: {
+    description: "Enable structured escalation to operator when Yandex price search is insufficient",
+    enabled: true,
+  },
+  GPT_WEB_SEARCH_ENABLED: {
+    description: "Enable GPT web_search as fallback when Yandex price search is insufficient",
+    enabled: true,
+  },
 };
 
 class FeatureFlagService {

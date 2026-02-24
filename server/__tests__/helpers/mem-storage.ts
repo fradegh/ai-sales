@@ -233,6 +233,7 @@ export class MemStorage implements IStorage {
       // Phase 1.1: Self-check handoff info
       selfCheckNeedHandoff: false,
       selfCheckReasons: [],
+      escalationData: null,
     };
     this.aiSuggestions.set(suggestion.id, suggestion);
 

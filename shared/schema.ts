@@ -336,8 +336,9 @@ export const aiSuggestions = pgTable("ai_suggestions", {
   autosendEligible: boolean("autosend_eligible").default(false),
   autosendBlockReason: text("autosend_block_reason"), // FLAG_OFF, SETTING_OFF, INTENT_NOT_ALLOWED
   // Phase 1.1: Self-check handoff info
-  selfCheckNeedHandoff: boolean("self_check_need_handoff").default(false),
+    selfCheckNeedHandoff: boolean("self_check_need_handoff").default(false),
   selfCheckReasons: jsonb("self_check_reasons").default([]), // array of strings
+  escalationData: jsonb("escalation_data"),
 });
 
 // Human Actions (approve/edit/reject tracking)
@@ -810,6 +811,9 @@ export const FEATURE_FLAG_NAMES = [
   "MAX_CHANNEL_ENABLED",
   "MAX_PERSONAL_CHANNEL_ENABLED",
   "AUTO_PARTS_ENABLED",
+  "AI_PRICE_ESTIMATE_ENABLED",
+  "PRICE_ESCALATION_ENABLED",
+  "GPT_WEB_SEARCH_ENABLED",
 ] as const;
 
 // ============ Channel Types ============
@@ -1385,6 +1389,9 @@ export const priceSnapshots = pgTable(
     listingsCount: integer("listings_count").default(0), // number of valid listings found
     searchQuery: text("search_query"),       // query used for web search
     expiresAt: timestamp("expires_at"),      // createdAt + 7 days (or 24h for not_found)
+    stage: text("stage"),                    // "yandex" | "escalation" | "not_found"
+    urls: text("urls").array(),              // per-listing source URLs
+    domains: text("domains").array(),        // unique domains found
     raw: jsonb("raw").default({}),
     createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   },
@@ -1588,6 +1595,7 @@ export const transmissionIdentityCache = pgTable(
     createdAt: timestamp("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
+    expiresAt: timestamp("expires_at"),
   },
   (table) => [
     uniqueIndex("transmission_identity_cache_normalized_oem_unique").on(table.normalizedOem),

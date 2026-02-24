@@ -1,7 +1,7 @@
 # PROJECT_MAP.md — AI Sales Operator
 
 > **Read this file at the start of every non-trivial task.**
-> Last updated: 2026-02-21
+> Last updated: 2026-02-24 (Phase 1-3: Yandex+Playwright price pipeline, escalation, feature flags)
 
 ---
 
@@ -49,7 +49,7 @@ renders message templates, and suggests replies to operators.
 - Deps in `pyproject.toml`
 
 ### Infrastructure
-- PostgreSQL (48 tables, via Drizzle ORM)
+- PostgreSQL (49 tables, via Drizzle ORM)
 - Redis (BullMQ + caching)
 - PM2 (`ecosystem.config.cjs`)
 - Docker (node:20-alpine) / Nixpacks (Node 20)
@@ -157,12 +157,14 @@ ai-sales/
 │   │   ├── gearbox-templates.ts         # 5 Russian templates for gearbox lookup replies
 │   │   ├── price-lookup-queue.ts        # BullMQ queue for price lookups
 │   │   ├── transmission-identifier.ts   # GPT-4o-mini: identify model/manufacturer/origin from OEM (NEW)
-│   │   ├── price-searcher.ts            # OpenAI Web Search: find used transmission prices (NEW)
-│   │   ├── price-sources/               # Price cascade sources (used for fallback/no-OEM mode)
-│   │   │   ├── types.ts                 # PriceSource, PriceResult, GearboxType, detectGearboxType()
-│   │   │   ├── avito-source.ts          # Avito HTML parsing (cheerio, 15s timeout)
-│   │   │   ├── drom-source.ts           # Drom HTML parsing (cheerio, 15s timeout)
-│   │   │   ├── web-source.ts            # SerpAPI (20s timeout, requires SERP_API_KEY) — legacy
+│   │   ├── price-searcher.ts            # Price search orchestrator: Stage 1 Yandex+Playwright; GPT web_search fallback (GPT_WEB_SEARCH_ENABLED)
+│   │   ├── playwright-fetcher.ts        # Node.js → Python Playwright bridge: POST /fetch-page; fetch() fallback if service down
+│   │   ├── price-sources/               # Price source adapters (OEM fallback / no-OEM mode)
+│   │   │   ├── types.ts                 # PriceSource, PriceResult, GearboxType, detectGearboxType(), ListingItem (city, sourceUrl added)
+│   │   │   ├── avito-source.ts          # Avito HTML parsing (cheerio; disabled — AVITO_ENABLED=true to enable)
+│   │   │   ├── drom-source.ts           # Drom HTML parsing (cheerio; disabled — DROM_ENABLED=true to enable)
+│   │   │   ├── web-source.ts            # SerpAPI adapter — DEPRECATED, superseded by yandex-source.ts
+│   │   │   ├── yandex-source.ts         # Yandex Cloud Search API v2 client; domain priority scoring; excluded domains
 │   │   │   └── mock-source.ts           # Fixed fallback (never saved to internal_prices or price_snapshots)
 │   │   ├── rag-retrieval.ts             # RAG: embed query -> cosine similarity -> top results
 │   │   ├── rag-indexer.ts               # RAG: products/docs -> chunks with SHA-256 hashes
@@ -175,7 +177,7 @@ ai-sales/
 │   │   ├── cryptobot-billing.ts         # CryptoBot billing (primary — 50 USDT/month)
 │   │   ├── auth-service.ts              # Signup, login (lockout after 5 fails), password reset
 │   │   ├── owner-bootstrap.ts           # Platform owner creation from env vars at startup
-│   │   ├── audit-log.ts                 # In-memory audit (NOT persisted to DB)
+│   │   ├── audit-log.ts                 # Batched write to `audit_events` table (500ms flush, ALS context)
 │   │   ├── secret-store.ts              # AES-256-GCM encryption for secrets
 │   │   ├── secret-resolver.ts           # Secret resolution (env -> DB secrets cascade)
 │   │   ├── fraud-detection-service.ts   # Channel fingerprinting + trial eligibility
@@ -200,8 +202,9 @@ ai-sales/
 │   │   └── route-registry.ts            # Auto-discovery of registered Express routes
 │   ├── workers/                     # BullMQ workers (separate processes or inline)
 │   │   ├── vehicle-lookup.worker.ts # VIN/FRAME -> Python -> cache -> suggestion -> price trigger
-│   │   ├── price-lookup.worker.ts   # Price cascade: internal -> Avito -> Drom -> Web -> mock
-│   │   │                            # (now renders price_result template + payment methods suggestion)
+│   │   ├── price-lookup.worker.ts   # OEM mode: cache → identify → Yandex+Playwright pipeline → escalation (PRICE_ESCALATION_ENABLED) → not_found
+│   │   │                            # Fallback/no-OEM mode: Avito → Drom → GPT web search → mock
+│   │   │                            # Renders price_result / price_options template + payment methods suggestion
 │   │   └── message-send.worker.ts   # Delayed message sending via channel adapters
 │   ├── middleware/
 │   │   ├── rbac.ts                  # 5 roles, 16 permissions
@@ -228,7 +231,7 @@ ai-sales/
 │   └── tests/                       # Vitest integration/e2e tests (24 files)
 │
 ├── shared/                          # Shared between client and server
-│   ├── schema.ts                    # 48 Drizzle tables, all enums/constants, Zod schemas, types
+│   ├── schema.ts                    # 49 Drizzle tables, all enums/constants, Zod schemas, types
 │   └── models/
 │       ├── auth.ts                  # Session table + authUsers (OIDC profiles)
 │       └── chat.ts                  # Legacy chat schema (unused)
@@ -246,14 +249,21 @@ ai-sales/
 │   ├── 0008_price_snapshot_search_key.sql
 │   ├── 0009_add_templates_and_payment_methods.sql  # message_templates + payment_methods
 │   ├── 0010_add_tenant_agent_settings.sql          # tenant_agent_settings table
-│   ├── 0011_update_price_snapshots.sql             # (NEW) global cache: nullable tenant_id, new columns, expiresAt
-│   ├── 0012_add_mileage_tiers.sql                  # (NEW) mileage_low/mid/high columns in tenant_agent_settings
+│   ├── 0011_update_price_snapshots.sql             # global cache: nullable tenant_id, new columns, expiresAt
+│   ├── 0012_add_mileage_tiers.sql                  # mileage_low/mid/high columns in tenant_agent_settings
+│   ├── 0013_feature_flags_composite_unique.sql     # partial unique indexes for per-tenant flag overrides
+│   ├── 0014_max_personal_accounts.sql              # max_personal_accounts table (GREEN-API)
+│   ├── 0015_max_personal_multiaccount.sql          # multi-account: account_id + label, new unique constraint
+│   ├── 0016_transmission_identity_cache.sql        # transmission_identity_cache table (OEM → model name cache)
+│   ├── 0017_price_snapshots_stage.sql              # stage TEXT, urls TEXT[], domains TEXT[] on price_snapshots
+│   ├── 0018_transmission_identity_cache_ttl.sql    # expires_at TIMESTAMP + 30-day TTL backfill on transmission_identity_cache
+│   ├── 0019_ai_suggestions_escalation.sql          # escalation_data JSONB on ai_suggestions
 │   └── manual/
 │       ├── 0001b_create_email_unique_index.sql
 │       └── README.md
 │
 ├── max_personal_service.py          # Python: MAX Personal auth via Playwright (port 8100)
-├── podzamenu_lookup_service.py      # Python: VIN/FRAME lookup via Playwright (port 8200)
+├── podzamenu_lookup_service.py      # Python: VIN/FRAME lookup via Playwright (port 8200) + POST /fetch-page (price pipeline)
 ├── test_regression_iter4.py         # Python: Regression test for 48 VINs
 │
 ├── script/
@@ -312,7 +322,7 @@ ai-sales/
 ### AI & Learning
 | Table | Description |
 |-------|-------------|
-| `ai_suggestions` | Extended for Decision Engine: confidence, decision, penalties, autosend triple-lock |
+| `ai_suggestions` | Extended for Decision Engine: confidence, decision, penalties, autosend triple-lock, `escalation_data JSONB` (operator manual search payload, added via 0019) |
 | `human_actions` | approve/edit/reject/escalate tracking |
 | `ai_training_samples` | Dataset for few-shot learning |
 | `ai_training_policies` | Per-tenant learning config |
@@ -367,8 +377,9 @@ ai-sales/
 |-------|-------------|
 | `vehicle_lookup_cache` | VIN/FRAME lookup results cache |
 | `vehicle_lookup_cases` | Per-conversation lookup cases |
-| `price_snapshots` | Global price cache per OEM (tenantId = null). Includes transmission model, manufacturer, origin, mileage range, listingsCount, expiresAt. 7-day TTL for found results, 24h TTL for not_found. |
+| `price_snapshots` | Global price cache per OEM (`tenantId = null`). Columns: model, manufacturer, origin, mileage range, listingsCount, expiresAt, searchQuery, raw JSONB, `stage TEXT` (yandex/openai_web_search/not_found), `urls TEXT[]` (Playwright URLs), `domains TEXT[]` (unique domains). TTL: 7d / 24h (not_found) / 2h (ai_estimate) |
 | `internal_prices` | Tenant's own price list per OEM |
+| `transmission_identity_cache` | OEM → transmission model name cache (GPT-4o-mini). Fields: normalizedOem (UNIQUE), modelName, manufacturer, origin, confidence, hitCount, lastSeenAt, createdAt, `expires_at TIMESTAMP` (30-day TTL, backfilled via 0018) |
 
 ### Tenant Configuration (NEW in migrations 0009–0010)
 | Table | Description |
@@ -548,73 +559,105 @@ export function renderTemplate(content: string, variables: Record<string, string
 `{{budget_price}}`, `{{budget_mileage}}`, `{{mid_price}}`, `{{mid_mileage}}`,
 `{{quality_price}}`, `{{quality_mileage}}`, `{{listings_count}}`
 
-### `server/services/transmission-identifier.ts` (NEW)
+### `server/services/transmission-identifier.ts`
 
-Identifies a transmission model from an OEM/part number using GPT-4o-mini (no web search needed).
+Identifies a transmission model from an OEM/part number using GPT-4o-mini (no web search).
+Results are cached in `transmission_identity_cache` table (keyed by normalised OEM, hit-counted).
 
 ```typescript
 export interface TransmissionIdentification {
-  modelName: string | null;    // e.g. "JATCO JF011E"
+  modelName: string | null;    // e.g. "JATCO JF011E" — market name, NOT internal catalog code
   manufacturer: string | null; // e.g. "JATCO", "Aisin", "ZF"
   origin: "japan" | "europe" | "korea" | "usa" | "unknown";
   confidence: "high" | "medium" | "low";
   notes: string;
 }
+export interface VehicleContext {
+  make?: string | null; model?: string | null; year?: string | null;
+  engine?: string | null; body?: string | null; driveType?: string | null;
+  gearboxType?: "MT" | "AT" | "CVT" | null;
+  gearboxModelHint?: string | null; factoryCode?: string | null;
+}
 
-export async function identifyTransmissionByOem(oem: string): Promise<TransmissionIdentification>
+export async function identifyTransmissionByOem(
+  oem: string,
+  context?: VehicleContext
+): Promise<TransmissionIdentification>
 ```
 
-Uses the shared `openai` client exported from `decision-engine.ts`. Returns all-null result with `confidence: 'low'` on parse failure.
+GPT prompt instructs model to return market/commercial codes (`F4A42`, `U660E`) not internal catalog numbers.
+`isValidTransmissionModel()` guard rejects strings with 4+ consecutive digits or length > 12.
 
-### `server/services/price-searcher.ts` (NEW)
+### `server/services/price-searcher.ts`
 
-Searches for used/contract transmission prices via OpenAI Web Search (`gpt-4o-search-preview`).
+**3-stage pipeline** — Yandex+Playwright first, GPT web_search as opt-out fallback.
 
 ```typescript
 export interface PriceSearchResult {
   minPrice: number; maxPrice: number; avgPrice: number;
   mileageMin: number | null; mileageMax: number | null;
   currency: "RUB";
-  source: "openai_web_search" | "not_found";
+  source: "openai_web_search" | "yandex" | "not_found" | "ai_estimate" | "mock";
   listingsCount: number;
   listings: PriceSearchListing[];
   searchQuery: string;
   filteredOutCount: number;
+  urlsChecked?: string[];   // URLs opened via Playwright (Stage 1)
 }
 
 export async function searchUsedTransmissionPrice(
   oem: string,
   modelName: string | null,
-  origin: "japan" | "europe" | "korea" | "usa" | "unknown"
+  origin: "japan" | "europe" | "korea" | "usa" | "unknown",
+  make?: string | null,
+  vehicleContext?: VehicleContext | null,
+  tenantId?: string | null   // for GPT_WEB_SEARCH_ENABLED flag check
 ): Promise<PriceSearchResult>
+
+export async function searchWithYandex(
+  oem: string,
+  modelName: string | null,
+  make?: string | null,
+  model?: string | null,
+  gearboxType?: string | null
+): Promise<{ listings: ParsedListing[]; urlsChecked: string[] }>
 ```
 
-Search query strategy by origin:
-- japan → `"контрактная коробка передач {oem} {modelName} из Японии цена"`
-- europe → `"контрактная коробка передач {oem} {modelName} из Европы цена"`
-- other → `"контрактная коробка передач {oem} {modelName} б/у цена"`
+**Stage 1 — Yandex + Playwright:**
+- `buildYandexQueries()`: up to 3 queries using gearboxLabel + OEM + make/model/modelName
+- `searchYandex()` from `yandex-source.ts`: POST to `https://searchapi.yandex.net/v2/web/search`
+- Deduplicate by URL, sort by domain priority score, take top 8
+- `fetchPageViaPlaywright()`: POST to Python `/fetch-page`; falls back to native `fetch()` if service unavailable
+- `parseListingsFromHtml()`: cheerio — structured selectors for drom/farpost + universal text fallback
+- `filterListingsByTitle()`: `LISTING_INCLUDE_KEYWORDS` + `LISTING_EXCLUDE_KEYWORDS`
+- Dedup by URL + outlier removal (IQR)
+- **SUCCESS** (≥3 listings OR ≥2 domains) → return `source: "yandex"`
 
-Falls back to `"КПП {modelName ?? oem} контрактная б/у с разборки цена рублей"` if < 2 results.
-Excludes new/rebuilt listings. Returns `source: 'not_found'` if < 2 valid listings after filtering.
-Model configurable via `OPENAI_WEB_SEARCH_MODEL` env var (default: `gpt-4o-search-preview`).
+**Stage 2 (GPT fallback):** controlled by `GPT_WEB_SEARCH_ENABLED` flag (default `true`).
+Existing GPT `runSearch()` logic unchanged. If flag is `false`, returns `source: "not_found"` immediately.
 
-### `server/workers/price-lookup.worker.ts` (REWRITTEN)
+`LISTING_INCLUDE_KEYWORDS`: "в сборе", "коробка", "мкпп", "акпп", "вариатор", "контрактная", "б/у"…
+`LISTING_EXCLUDE_KEYWORDS`: "гидроблок", "насос", "сальник", "дефект", "на запчасти"…
 
-**OEM flow (new — global cache + AI search):**
-1. `getGlobalPriceSnapshot(oem)` — check global cache (expiresAt-based, any tenant)
-2. `identifyTransmissionByOem(oem)` — GPT-4o-mini identifies model, manufacturer, origin
-3. `searchUsedTransmissionPrice(oem, modelName, origin)` — OpenAI web search
-4. Save to global cache (`tenantId = null`, 7-day TTL; 24h for `not_found`)
-5. `createPriceSuggestion()` → `buildPriceReply()` with all new template variables
-6. `maybeCreatePaymentMethodsSuggestion()` — secondary payment methods suggestion
+### `server/workers/price-lookup.worker.ts`
 
-**Fallback flow (no OEM — unchanged, uses Avito/Drom cascade):**
-- Mock results are never saved to DB
-- Uses tenant-scoped snapshot with 24h TTL
+**OEM flow:**
+1. `getGlobalPriceSnapshot(cacheKey)` — global cache check (expiresAt-based, any tenant)
+2. `identifyTransmissionByOem(oem, vehicleContext)` — GPT-4o-mini (skipped if `oemModelHint` valid)
+3. `searchUsedTransmissionPrice(..., tenantId)` — Yandex+Playwright Stage 1; GPT fallback if `GPT_WEB_SEARCH_ENABLED`
+4. `not_found` → escalation if `PRICE_ESCALATION_ENABLED` (default true): `createEscalationSuggestion()`
+5. `not_found` + escalation disabled → `estimatePriceFromAI()` if `AI_PRICE_ESTIMATE_ENABLED` (confidence 0.5)
+6. Save to global cache (`tenantId = null`; TTL: 7d / 24h not_found / 2h ai_estimate)
+   - Includes: `stage`, `urls[]` (Playwright URLs), `domains[]` (unique domains)
+7. `createPriceSuggestions()` (price_options tiers or single price_result) + payment methods
+
+**Fallback flow (no OEM):** Avito → Drom → GPT web search → mock (mock NOT saved to DB)
 
 **Key rules:**
-- Mock source results are NEVER saved to price_snapshots
-- `not_found` results ARE saved (24h TTL) to prevent repeated re-searches
+- Mock source results are NEVER saved to `price_snapshots`
+- `not_found` + `ai_estimate` ARE saved (short TTL) to prevent repeated re-searches
+- `source` accepted values: `"yandex"`, `"openai_web_search"`, `"not_found"`, `"ai_estimate"`, `"mock"`, `"avito"`, `"drom"`, `"web"`, `"internal"`
+- Worker routes all three — `"yandex" || "openai_web_search" || "not_found"` — through the same snapshot-save path
 
 ---
 
@@ -671,28 +714,34 @@ vehicle_lookup_queue worker
   -> AI suggestion (gearbox reply)
   -> price_lookup_queue.enqueuePriceLookup()
 
-price_lookup_queue worker (OEM mode — two-step price dialog):
-  -> getGlobalPriceSnapshot(oem) — global cache check (expiresAt-based, 7-day TTL)
-  -> [cache miss] identifyTransmissionByOem(oem) — GPT-4o-mini (no web search)
-  -> searchUsedTransmissionPrice(oem, modelName, origin) — OpenAI Web Search
-  -> save global snapshot (tenantId=null, 7d TTL or 24h for not_found)
-  -> getTenantAgentSettings(tenantId) — get mileage tier thresholds
-  -> createPriceSuggestions():
-       Split listings by mileage thresholds (mileageLow/mileageMid from agentSettings):
-         quality tier: mileage ≤ mileageLow (default 60k)
-         mid tier:     mileageLow < mileage ≤ mileageMid (default 90k)
-         budget tier:  mileage > mileageMid
-       IF quality + budget tiers have listings:
-         -> render price_options template (budget/mid/quality prices + mileages)
-         -> createAiSuggestion() with intent="price_options"
-       ELSE:
-         -> buildPriceReply() -> render price_result template
-         -> createAiSuggestion() with intent="price"
+price_lookup_queue worker (OEM mode):
+  -> getGlobalPriceSnapshot(cacheKey) — global cache check (expiresAt-based, 7-day TTL)
+  -> [cache miss] identifyTransmissionByOem(oem, vehicleContext) — GPT-4o-mini
+
+  Stage 1 — searchWithYandex() via searchUsedTransmissionPrice():
+    -> buildYandexQueries() → 3 parallel POST https://searchapi.yandex.net/v2/web/search
+    -> score/deduplicate URLs by domain priority; open top 5 via POST /fetch-page (Python Playwright)
+    -> parseListingsFromHtml() + filterListingsByTitle() + dedup + IQR outlier removal
+    -> if validListings ≥ 3 OR unique domains ≥ 2: source="yandex" → save snapshot → suggestion → DONE
+    -> else: GPT fallback if GPT_WEB_SEARCH_ENABLED (default true)
+
+  Stage 2 — if not_found and PRICE_ESCALATION_ENABLED (default true):
+    -> createEscalationSuggestion(): readyQueries (RU+EN), suggestedSites, urlsAlreadyChecked
+    -> intent="escalation", escalation_data JSONB stored in ai_suggestions
+
+  Stage 3 — if not_found + escalation disabled + AI_PRICE_ESTIMATE_ENABLED:
+    -> estimatePriceFromAI() (conf: 0.5) → save ai_estimate snapshot (2h TTL)
+
+  Stage 4 — if all disabled: createNotFoundSuggestion() (template or default "Уточним стоимость…")
+
+  -> save global snapshot (tenantId=null, stage, urls[], domains[])
+  -> getTenantAgentSettings() → createPriceSuggestions():
+       quality tier / mid tier / budget tier by mileage; price_options or price_result template
        -> maybeCreatePaymentMethodsSuggestion() (always)
 
 price_lookup_queue worker (FALLBACK/MODEL_ONLY mode — no OEM):
   -> tenant-scoped snapshot check
-  -> Avito -> Drom cascade (mock if all fail, mock NOT saved to DB)
+  -> Avito -> Drom cascade -> GPT web search fallback -> mock (mock NOT saved to DB)
   -> createAiSuggestion() + payment methods suggestion
 ```
 
@@ -727,10 +776,14 @@ price_lookup_queue worker (FALLBACK/MODEL_ONLY mode — no OEM):
 | `FEW_SHOT_LEARNING` | true | Few-shot examples in prompts |
 | `TELEGRAM_PERSONAL_CHANNEL_ENABLED` | true | MTProto channel |
 | `WHATSAPP_PERSONAL_CHANNEL_ENABLED` | true | Baileys channel |
-| `MAX_PERSONAL_CHANNEL_ENABLED` | true | Playwright MAX channel |
+| `MAX_PERSONAL_CHANNEL_ENABLED` | true | GREEN-API MAX Personal channel |
 | `TELEGRAM_CHANNEL_ENABLED` | false | Bot API (inactive) |
 | `WHATSAPP_CHANNEL_ENABLED` | false | Business API (inactive) |
 | `MAX_CHANNEL_ENABLED` | false | Bot API (inactive) |
+| `AUTO_PARTS_ENABLED` | false | VIN/FRAME auto-detection pipeline in inbound handler |
+| `AI_PRICE_ESTIMATE_ENABLED` | true | GPT web_search AI estimate when both Yandex and escalation are disabled |
+| `PRICE_ESCALATION_ENABLED` | true | Structured escalation suggestion to operator when Yandex returns insufficient results |
+| `GPT_WEB_SEARCH_ENABLED` | true | GPT web_search fallback when Yandex Stage 1 is insufficient (set false to skip to escalation) |
 
 Check via `featureFlagService.isEnabled("FLAG_NAME")` or `featureFlagService.isEnabled("FLAG_NAME", tenantId)`.
 
@@ -835,10 +888,13 @@ DATABASE_URL                       # PostgreSQL connection URL
 ```
 TELEGRAM_API_ID / TELEGRAM_API_API_HASH    # MTProto (from my.telegram.org)
 CRYPTOBOT_API_TOKEN                        # CryptoBot billing
-PODZAMENU_LOOKUP_SERVICE_URL               # Python service (default: http://localhost:8200)
-AVITO_ENABLED / DROM_ENABLED               # Price sources (fallback/no-OEM mode)
-SERP_API_KEY                               # Legacy SerpAPI (replaced by OpenAI web search)
-OPENAI_WEB_SEARCH_MODEL                    # Model for price web search (default: gpt-4o-search-preview)
+PODZAMENU_LOOKUP_SERVICE_URL               # Python Podzamenu service URL (default: http://localhost:8200)
+PODZAMENU_SERVICE_PORT                     # Port for Node→Python Playwright bridge (default: 8200)
+AVITO_ENABLED / DROM_ENABLED               # Price sources (fallback/no-OEM mode; disabled by default)
+YANDEX_SEARCH_API_KEY                      # Yandex Cloud Search API key (Stage 1 price search; skipped if unset)
+YANDEX_FOLDER_ID                           # Yandex Cloud folder ID (required with YANDEX_SEARCH_API_KEY)
+SERP_API_KEY                               # Legacy SerpAPI — DEPRECATED, superseded by Yandex Search API
+OPENAI_WEB_SEARCH_MODEL                    # GPT model for price web search (default: gpt-4.1)
 OWNER_EMAIL / OWNER_PASSWORD               # Platform owner bootstrap
 REDIS_URL                                  # Redis (required for BullMQ workers)
 ```
@@ -846,6 +902,7 @@ REDIS_URL                                  # Redis (required for BullMQ workers)
 ### PM2 (`ecosystem.config.cjs`)
 - `aisales`: main app (`dist/index.cjs`), 1 instance, 1G memory limit
 - `worker-price-lookup`: separate process, 512M memory limit
+- `podzamenu-service`: Python Podzamenu Playwright service (port 8200)
 
 ### Build
 - `npm run build` -> `script/build.ts` -> esbuild (server) + Vite (client)

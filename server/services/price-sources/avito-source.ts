@@ -19,7 +19,8 @@ function matchesGearboxType(text: string, gearboxTypeKeywords: string[]): boolea
   return hasTypeKeyword || hasGenericKeyword;
 }
 
-function parsePrice(raw: string): number | null {
+function parsePrice(raw: string | null | undefined): number | null {
+  if (!raw) return null;
   const cleaned = raw.replace(/[^\d]/g, "");
   const num = parseInt(cleaned, 10);
   return Number.isFinite(num) && num > 0 ? num : null;

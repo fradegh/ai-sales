@@ -480,7 +480,7 @@ async function lookupPricesByOem(
     console.log(
       `[PriceLookupWorker] Using global cached snapshot ${cached.id} for OEM "${oem}" (source: ${cached.source})`
     );
-    if (cached.source === "ai_estimate" || cached.source === "openai_web_search") {
+    if (cached.source === "ai_estimate" || cached.source === "openai_web_search" || cached.source === "yandex") {
       const priceMin = cached.minPrice ?? 0;
       const priceMax = cached.maxPrice ?? 0;
       const displayName =
@@ -547,25 +547,49 @@ async function lookupPricesByOem(
     );
   }
 
-  // 3. Search real prices via OpenAI Web Search
+  // 3. Search real prices (Yandex + Playwright, then GPT web_search as fallback)
   console.log(`[PriceLookupWorker] Searching prices for OEM "${oem}"`);
   const priceData = await searchUsedTransmissionPrice(
     oem,
     identification.modelName,
     identification.origin,
     identification.manufacturer,
-    vehicleContext
+    vehicleContext,
+    tenantId
   );
 
   // Do NOT save mock results — only save real search results (including not_found)
-  if (priceData.source === "openai_web_search" || priceData.source === "not_found") {
+  if (
+    priceData.source === "yandex" ||
+    priceData.source === "openai_web_search" ||
+    priceData.source === "not_found"
+  ) {
     const isNotFound = priceData.source === "not_found";
 
-    // AI price estimate fallback when web search returns 0 listings
     if (isNotFound) {
+      // Collect urlsChecked from Yandex stage if available
+      const urlsChecked: string[] = Array.isArray((priceData as any).urlsChecked)
+        ? (priceData as any).urlsChecked
+        : [];
+
+      // STAGE 2: Escalation — structured operator task (replaces AI estimate as primary fallback)
+      const escalationEnabled = await featureFlagService.isEnabled("PRICE_ESCALATION_ENABLED", tenantId);
+      if (escalationEnabled) {
+        await createEscalationSuggestion(
+          tenantId,
+          conversationId,
+          oem,
+          identification?.modelName ?? null,
+          vehicleContext,
+          urlsChecked
+        );
+        return;
+      }
+
+      // Fallback: AI estimate if escalation disabled
       const estimateAllowed = await featureFlagService.isEnabled("AI_PRICE_ESTIMATE_ENABLED", tenantId);
       if (!estimateAllowed) {
-        console.log("[PriceLookupWorker] AI estimate disabled by flag, returning not_found");
+        console.log("[PriceLookupWorker] Escalation and AI estimate both disabled, returning not_found");
         await createNotFoundSuggestion(tenantId, conversationId, oem);
         return;
       }
@@ -601,7 +625,7 @@ async function lookupPricesByOem(
         await maybeCreatePaymentMethodsSuggestion(tenantId, conversationId);
         return;
       }
-      // AI call failed or returned invalid JSON — fall through to existing not_found behavior
+      // AI call failed or returned invalid JSON — fall through to not_found behavior
     }
 
     // For not_found, use 24h TTL so we don't re-search constantly
@@ -625,6 +649,9 @@ async function lookupPricesByOem(
       listingsCount: priceData.listingsCount,
       searchQuery: priceData.searchQuery,
       expiresAt,
+      stage: priceData.source,
+      urls: priceData.urlsChecked ?? [],
+      domains: Array.from(new Set(priceData.listings.map((l) => l.site).filter(Boolean))),
       raw: { ...priceData, identification } as any,
       searchKey: cacheKey,
     });
@@ -635,7 +662,7 @@ async function lookupPricesByOem(
     );
 
     // 5. Create suggestion using customer-friendly template
-    if (snapshot.source === "openai_web_search") {
+    if (snapshot.source === "openai_web_search" || snapshot.source === "yandex") {
       const priceMin = snapshot.minPrice ?? 0;
       const priceMax = snapshot.maxPrice ?? 0;
       const displayName =
@@ -658,6 +685,101 @@ async function lookupPricesByOem(
     // Unexpected source — create a not_found suggestion
     console.warn(`[PriceLookupWorker] Unexpected source: ${(priceData as any).source}`);
     await createNotFoundSuggestion(tenantId, conversationId, oem);
+  }
+}
+
+// ─── Escalation suggestion (operator manual price search) ────────────────────
+
+async function createEscalationSuggestion(
+  tenantId: string,
+  conversationId: string,
+  oem: string,
+  modelName: string | null,
+  vehicleContext: VehicleContext | null | undefined,
+  urlsChecked: string[]
+): Promise<void> {
+  const gearboxLabel = vehicleContext?.gearboxType === "MT" ? "МКПП"
+    : vehicleContext?.gearboxType === "AT" ? "АКПП"
+    : vehicleContext?.gearboxType === "CVT" ? "вариатор"
+    : "КПП";
+
+  const make = vehicleContext?.make ?? "";
+  const model = vehicleContext?.model ?? "";
+  const year = vehicleContext?.year ?? "";
+  const engine = vehicleContext?.engine ?? "";
+  const driveType = vehicleContext?.driveType ?? "";
+
+  const readyQueries = [
+    `купить ${gearboxLabel} ${oem} б/у`,
+    `контрактная ${gearboxLabel} ${make} ${model} ${oem}`,
+    `${gearboxLabel} ${oem} цена разборка`,
+    `used ${gearboxLabel} ${oem} buy`,
+    modelName ? `${modelName} transmission ${oem} for sale` : null,
+    modelName ? `JDM ${modelName} gearbox ${oem}` : null,
+  ].filter(Boolean) as string[];
+
+  const escalationData = {
+    type: "manual_price_search",
+    needsManualInternational: true,
+    reason: `Недостаточно цен в РФ сегменте для OEM ${oem}`,
+    searchContext: {
+      oem,
+      modelName: modelName ?? null,
+      vehicleContext: {
+        make,
+        model,
+        year,
+        engine,
+        driveType,
+        gearboxType: vehicleContext?.gearboxType ?? null,
+      },
+      urlsAlreadyChecked: urlsChecked,
+    },
+    operatorHints: {
+      readyQueries,
+      suggestedSites: [
+        "baza.drom.ru — поиск по OEM",
+        "farpost.ru — особенно для регионов ДВ",
+        "japancar.ru — японские КПП",
+        "ebay.com — международный поиск",
+        "aucfree.com — Yahoo Auctions Japan",
+        "jdmbuysell.com — JDM запчасти",
+      ],
+    },
+  };
+
+  const operatorText =
+    `🔍 Требуется ручной поиск цены\n` +
+    `КПП: ${modelName ?? oem} (OEM: ${oem})\n` +
+    `Авто: ${[make, model, year, engine, driveType].filter(Boolean).join(" ")}\n\n` +
+    `Готовые запросы для поиска:\n` +
+    readyQueries.slice(0, 3).map((q) => `• ${q}`).join("\n") + "\n\n" +
+    `Уже проверено (${urlsChecked.length} источников):\n` +
+    urlsChecked.slice(0, 5).map((u) => `• ${u}`).join("\n");
+
+  try {
+    const suggestion = await storage.createAiSuggestion({
+      conversationId,
+      messageId: null,
+      suggestedReply: operatorText,
+      intent: "escalation",
+      confidence: 1.0,
+      needsApproval: true,
+      needsHandoff: false,
+      decision: "NEED_APPROVAL",
+      escalationData,
+      questionsToAsk: [],
+      usedSources: [],
+      status: "pending",
+      autosendEligible: false,
+      autosendBlockReason: "manual_price_search_required",
+    });
+    broadcastSuggestion(tenantId, conversationId, suggestion.id);
+    console.log(
+      `[PriceLookupWorker] Created escalation suggestion ${suggestion.id} for OEM ${oem}`
+    );
+  } catch (err) {
+    console.error("[PriceLookupWorker] Failed to create escalation suggestion:", err);
   }
 }
 

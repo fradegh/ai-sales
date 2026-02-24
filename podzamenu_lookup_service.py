@@ -41,6 +41,18 @@ def is_china_vin(vin: str) -> bool:
 _browser = None
 _playwright = None
 _lookup_semaphore = asyncio.Semaphore(2)
+_fetch_semaphore = asyncio.Semaphore(5)
+
+
+class FetchPageRequest(BaseModel):
+    url: str
+    timeout: Optional[int] = 10000
+
+
+class FetchPageResponse(BaseModel):
+    html: str
+    status: int
+    finalUrl: str
 
 
 class LookupRequest(BaseModel):
@@ -1748,6 +1760,37 @@ async def lookup(request: LookupRequest):
         except Exception:
             pass
     raise HTTPException(status_code=500, detail={"error": "LOOKUP_ERROR", "message": err_msg, "evidence": evidence})
+
+
+@app.post("/fetch-page", response_model=FetchPageResponse)
+async def fetch_page(request: FetchPageRequest):
+    """Fetch a rendered HTML page via Playwright. Used by the Node.js price search pipeline."""
+    async with _fetch_semaphore:
+        browser = await _get_browser()
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720},
+            locale="ru-RU",
+            extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9"},
+        )
+        try:
+            page = await context.new_page()
+            response = await page.goto(
+                request.url,
+                wait_until="domcontentloaded",
+                timeout=request.timeout,
+            )
+            await asyncio.sleep(2)
+            html = await page.content()
+            return FetchPageResponse(
+                html=html,
+                status=response.status if response else 0,
+                finalUrl=page.url,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            await context.close()
 
 
 # prof_rf: header patterns "Коробка передач 3043001600" / "Трансмиссия <OEM>"

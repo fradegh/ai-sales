@@ -755,6 +755,7 @@ export class DatabaseStorage implements IStorage {
       autosendBlockReason: aiSuggestions.autosendBlockReason,
       selfCheckNeedHandoff: aiSuggestions.selfCheckNeedHandoff,
       selfCheckReasons: aiSuggestions.selfCheckReasons,
+      escalationData: aiSuggestions.escalationData,
     }).from(aiSuggestions)
       .innerJoin(conversations, eq(aiSuggestions.conversationId, conversations.id))
       .where(eq(conversations.tenantId, tenantId))

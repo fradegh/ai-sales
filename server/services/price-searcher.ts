@@ -1,5 +1,8 @@
 import { openai } from "./decision-engine";
 import type { VehicleContext } from "./transmission-identifier";
+import { searchYandex, DOMAIN_PRIORITY_SCORES } from "./price-sources/yandex-source";
+import { fetchPageViaPlaywright } from "./playwright-fetcher";
+import { featureFlagService } from "./feature-flags";
 
 export interface PriceSearchListing {
   title: string;
@@ -17,7 +20,8 @@ export interface PriceSearchResult {
   mileageMin: number | null;
   mileageMax: number | null;
   currency: "RUB";
-  source: "openai_web_search" | "not_found";
+  source: "openai_web_search" | "yandex" | "not_found" | "ai_estimate" | "mock";
+  urlsChecked?: string[];
   listingsCount: number;
   listings: PriceSearchListing[];
   searchQuery: string;
@@ -68,6 +72,18 @@ const PREFER_KEYWORDS = [
   "японская",
   "европейская",
   "kontraktnaya",
+];
+
+const LISTING_INCLUDE_KEYWORDS = [
+  "в сборе", "коробка", "мкпп", "акпп", "вариатор",
+  "контрактная", "контракт", "б/у", "бу",
+];
+
+const LISTING_EXCLUDE_KEYWORDS = [
+  "гидроблок", "насос", "сальник", "вал", "поддон",
+  "фильтр", "датчик", "ремкомплект", "на запчасти",
+  "под восстановление", "требует ремонта", "дефект",
+  "не работает",
 ];
 
 // Strip parenthetical suffix for DISPLAY purposes only (e.g. customer-facing labels).
@@ -264,6 +280,205 @@ function parseListingsFromResponse(content: string): ParsedListing[] {
   return listings;
 }
 
+function resolveGearboxLabel(gearboxType?: string | null): string {
+  if (!gearboxType) return "КПП";
+  const t = gearboxType.toUpperCase();
+  if (t === "MT") return "МКПП";
+  if (t === "AT") return "АКПП";
+  if (t === "CVT") return "вариатор";
+  return "КПП";
+}
+
+function buildYandexQueries(
+  oem: string,
+  modelName: string | null,
+  make?: string | null,
+  model?: string | null,
+  gearboxType?: string | null
+): string[] {
+  const label = resolveGearboxLabel(gearboxType);
+  const queries: string[] = [];
+
+  // Query 1: always — most reliable
+  queries.push(`${label} ${oem} купить б/у`);
+
+  // Query 2: with make+model context
+  if (make && model) {
+    queries.push(`${label} ${make} ${model} ${oem} контрактная`);
+  } else if (make) {
+    queries.push(`контрактная ${label} ${make} ${oem}`);
+  }
+
+  // Query 3: with modelName if it differs from OEM and has no 4+ digits
+  if (modelName && modelName !== oem && !/\d{4,}/.test(modelName)) {
+    queries.push(`${label} ${modelName} ${oem} цена`);
+  }
+
+  return queries.slice(0, 3);
+}
+
+function parseListingsFromHtml(
+  html: string,
+  sourceUrl: string,
+  domain: string
+): ParsedListing[] {
+  const listings: ParsedListing[] = [];
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const cheerio = require("cheerio");
+    const $ = cheerio.load(html);
+
+    // Generic price pattern — works across most RU auto parts sites
+    const pricePattern = /(\d[\d\s]{2,})\s*(?:₽|руб|rub)/gi;
+    const bodyText = $("body").text();
+    const matches = [...bodyText.matchAll(pricePattern)];
+
+    // Structured selectors for drom.ru
+    if (domain.includes("drom.ru")) {
+      $("[data-bull-item], .bull-item, .listing-item").each((_i: number, el: any) => {
+        const title = $(el).find(".bull-item__subject, .item-title, h3").first().text().trim();
+        const priceText = $(el).find(".bull-item__price-block, .price, [class*='price']").first().text().trim();
+        const price = parsePriceFromText(priceText);
+        const href = $(el).find("a").first().attr("href");
+        const url = href ? (href.startsWith("http") ? href : `https://baza.drom.ru${href}`) : sourceUrl;
+        if (price && title) {
+          listings.push({ title, price, url, site: domain, mileage: null, isUsed: true });
+        }
+      });
+    }
+
+    // Structured selectors for farpost.ru
+    if (domain.includes("farpost.ru")) {
+      $(".bull-item, .lot-title, [class*='item']").each((_i: number, el: any) => {
+        const title = $(el).find("a, h3, .title").first().text().trim();
+        const priceText = $(el).find("[class*='price']").first().text().trim();
+        const price = parsePriceFromText(priceText);
+        const href = $(el).find("a").first().attr("href");
+        const url = href ? (href.startsWith("http") ? href : `https://farpost.ru${href}`) : sourceUrl;
+        if (price && title) {
+          listings.push({ title, price, url, site: domain, mileage: null, isUsed: true });
+        }
+      });
+    }
+
+    // Universal fallback: extract prices from page text
+    if (listings.length === 0 && matches.length > 0) {
+      for (const match of matches.slice(0, 5)) {
+        const price = parsePriceFromText(match[0]);
+        if (price) {
+          listings.push({
+            title: `КПП б/у (${domain})`,
+            price,
+            url: sourceUrl,
+            site: domain,
+            mileage: null,
+            isUsed: true,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[PriceSearcher] HTML parse error for ${domain}:`, err);
+  }
+  return listings;
+}
+
+function filterListingsByTitle(listings: ParsedListing[]): ParsedListing[] {
+  return listings.filter((l) => {
+    const title = l.title.toLowerCase();
+    const hasExcluded = LISTING_EXCLUDE_KEYWORDS.some((kw) => title.includes(kw));
+    if (hasExcluded) return false;
+    // Only apply include filter if title is descriptive enough
+    if (title.length < 5) return true;
+    const hasIncluded = LISTING_INCLUDE_KEYWORDS.some((kw) => title.includes(kw));
+    return hasIncluded;
+  });
+}
+
+export async function searchWithYandex(
+  oem: string,
+  modelName: string | null,
+  make?: string | null,
+  model?: string | null,
+  gearboxType?: string | null
+): Promise<{ listings: ParsedListing[]; urlsChecked: string[] }> {
+  const queries = buildYandexQueries(oem, modelName, make, model, gearboxType);
+  console.log(`[PriceSearcher/Yandex] Queries: ${JSON.stringify(queries)}`);
+
+  // Run all queries in parallel
+  const searchResults = await Promise.allSettled(
+    queries.map((q) => searchYandex(q, 5))
+  );
+
+  // Collect and deduplicate URLs sorted by priority
+  const urlMap = new Map<string, { title: string; snippet: string; domain: string; score: number }>();
+  for (const result of searchResults) {
+    if (result.status === "fulfilled") {
+      for (const item of result.value) {
+        if (!urlMap.has(item.url)) {
+          urlMap.set(item.url, {
+            title: item.title,
+            snippet: item.snippet,
+            domain: item.domain,
+            score: item.priorityScore,
+          });
+        }
+      }
+    }
+  }
+
+  // Sort by priority, take top 8
+  const sortedUrls = Array.from(urlMap.entries())
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 8)
+    .map(([url]) => url);
+
+  console.log(`[PriceSearcher/Yandex] Opening ${sortedUrls.length} URLs via Playwright`);
+
+  // Open pages concurrently (max 5 parallel)
+  const pageResults = await Promise.allSettled(
+    sortedUrls.slice(0, 5).map(async (url) => {
+      const html = await fetchPageViaPlaywright(url);
+      return { url, html };
+    })
+  );
+
+  const urlsChecked: string[] = [];
+  const allListings: ParsedListing[] = [];
+
+  for (const result of pageResults) {
+    if (result.status === "fulfilled" && result.value.html) {
+      const { url, html } = result.value;
+      urlsChecked.push(url);
+      const domain = urlMap.get(url)?.domain ?? "";
+      const parsed = parseListingsFromHtml(html, url, domain);
+      const filtered = filterListingsByTitle(parsed);
+      console.log(
+        `[PriceSearcher/Yandex] ${domain}: parsed=${parsed.length}, kept=${filtered.length}`
+      );
+      allListings.push(...filtered);
+    }
+  }
+
+  // Deduplicate by url
+  const seen = new Set<string>();
+  const dedupedListings = allListings.filter((l) => {
+    if (seen.has(l.url)) return false;
+    seen.add(l.url);
+    return true;
+  });
+
+  // Remove outliers
+  const validPrices = removeOutliers(dedupedListings.map((l) => l.price));
+  const validListings = dedupedListings.filter((l) => validPrices.includes(l.price));
+
+  console.log(
+    `[PriceSearcher/Yandex] Final: ${validListings.length} listings from ${urlsChecked.length} pages`
+  );
+
+  return { listings: validListings, urlsChecked };
+}
+
 async function fetchLiveFxRates(): Promise<Record<string, number>> {
   const DEFAULT_RATES: Record<string, number> = {
     JPY: 0.50,
@@ -305,7 +520,8 @@ export async function searchUsedTransmissionPrice(
   modelName: string | null,
   origin: Origin,
   make?: string | null,
-  vehicleContext?: VehicleContext | null
+  vehicleContext?: VehicleContext | null,
+  tenantId?: string | null
 ): Promise<PriceSearchResult> {
   const fxRates = await fetchLiveFxRates();
   console.log("[PriceSearcher] FX rates:", fxRates);
@@ -405,7 +621,63 @@ export async function searchUsedTransmissionPrice(
     }
   };
 
-  // Primary Russian search
+  // STAGE 1: Yandex + Playwright
+  const yandexResult = await searchWithYandex(
+    oem,
+    modelName,
+    vehicleContext?.make ?? make,
+    vehicleContext?.model ?? null,
+    vehicleContext?.gearboxType ?? null
+  );
+
+  const uniqueDomains = new Set(yandexResult.listings.map((l) => l.site)).size;
+  const hasEnoughYandex =
+    yandexResult.listings.length >= 3 || uniqueDomains >= 2;
+
+  if (hasEnoughYandex) {
+    const prices = yandexResult.listings.map((l) => l.price);
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    const avgPrice = Math.round(prices.reduce((a, b) => a + b, 0) / prices.length);
+    console.log(
+      `[PriceSearcher] Yandex success: ${yandexResult.listings.length} listings, ` +
+      `range ${minPrice}–${maxPrice} RUB`
+    );
+    return {
+      source: "yandex",
+      minPrice,
+      maxPrice,
+      avgPrice,
+      mileageMin: null,
+      mileageMax: null,
+      currency: "RUB",
+      listingsCount: yandexResult.listings.length,
+      searchQuery: yandexResult.urlsChecked.join(", "),
+      filteredOutCount: 0,
+      listings: yandexResult.listings,
+      urlsChecked: yandexResult.urlsChecked,
+    };
+  }
+
+  console.log(
+    `[PriceSearcher] Yandex insufficient (${yandexResult.listings.length} listings, ` +
+    `${uniqueDomains} domains) — falling through to GPT fallback`
+  );
+
+  // Check if GPT web_search fallback is allowed (default true for backward compatibility)
+  const gptFallbackEnabled = tenantId
+    ? await featureFlagService.isEnabled("GPT_WEB_SEARCH_ENABLED", tenantId)
+    : true;
+
+  if (!gptFallbackEnabled) {
+    return {
+      ...notFoundResult,
+      searchQuery: primaryQuery,
+      urlsChecked: yandexResult.urlsChecked,
+    };
+  }
+
+  // Primary Russian search (GPT web_search fallback — will be replaced by escalation in Phase 3)
   let rawListings = await runSearch(primaryQuery);
   let usedQuery = primaryQuery;
 
